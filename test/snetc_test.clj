@@ -1,5 +1,6 @@
-(ns snetc-test  (:require [clojure.test :refer :all]
-            [snetc :refer :all]))
+(ns snetc-test  (:require
+                 [clojure.test :refer [deftest is]]
+                 [snetc :refer [plus, divide]]))
 
 (deftest adding-numbers
   (is (= 4 (plus 2 2))))
