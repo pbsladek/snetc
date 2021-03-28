@@ -32,14 +32,29 @@
 
 (defn subnet-addresses [mask]
   (let [right (- 32 mask)]
-    (bit-shift-left 1 right)))
+    (clojure.lang.Numbers/shiftLeftInt 1 right)))
 
 (defn subnet-last-address [subnet, mask]
-  (let [a (subnet-addresses mask)]
-    (- 1 (+ subnet a))))
+  (- (+ subnet (subnet-addresses mask)) 1))
 
 (defn subnet-netmask [mask]
-  (network-address 0xffffffff mask))
+  (network-address -1 mask))
+
+(defn useable-range [network, mask]
+  (let [aton (inet-aton network)
+        net (network-address aton mask)
+        net-last-address (subnet-last-address aton mask)
+        useable-first (+ net 1)
+        useable-last (- net-last-address 1)
+        useable-range (str (inet-ntoa useable-first) " - " (inet-ntoa useable-last))]
+    useable-range))
+
+(defn full-range [network, mask]
+  (let [aton (inet-aton network)
+        net (network-address aton mask)
+        net-last-address (subnet-last-address aton mask)
+        range (str (inet-ntoa net) " - " (inet-ntoa net-last-address))]
+    range))
 
 (defn table [options]
   (let [network (get options :network)
@@ -47,13 +62,10 @@
         mask (get options :mask)
         aton (inet-aton network)
         net (network-address aton mask)
-        ntoa (inet-ntoa net)]
-    (println aton)
-    (println net)
-    (println ntoa)))
-
-;; (defn ascii-to-bin [str])
-;; (defn bin-to-ascii [str])
+        useable-range (useable-range network mask)
+        full-range (full-range network mask)]
+    (println "range: " useable-range)
+    (println "full range: " full-range)))
 
 (def cli-options
   [["-n" "--network 192.168.0.0" "Network address"
