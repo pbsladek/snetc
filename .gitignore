@@ -1,2 +1,5 @@
 .cpcache
 .lsp
+.nrepl-port
+.calva/
+target/

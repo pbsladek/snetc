@@ -1,12 +1,16 @@
 (ns snetc-test  (:require
                  [clojure.test :refer [deftest is]]
-                 [snetc :refer [plus, divide]]))
+                 [snetc :refer [inet-aton, inet-ntoa, network-address]]))
 
-(deftest adding-numbers
-  (is (= 4 (plus 2 2))))
+(def network "192.168.0.0")
+(def network-int "-1062731776")
+(def mask 22)
 
-(deftest dividing-numbers
-  (is (= 2 (divide 4 2))))
+(deftest inet-ntoa
+  (is (= network-int (inet-aton network))))
 
-(deftest dividing-numbers-by-zero
-  (is (thrown? ArithmeticException (divide 1 0))))
+(deftest inet-ntoa
+  (is (= network (inet-ntoa network-int))))
+
+(deftest network-address
+  (is (= network-int (network-address network-int mask))))
