@@ -1,5 +1,8 @@
+.claude/
 .cpcache
+.clj-kondo/.cache
 .lsp
 .nrepl-port
 .calva/
 target/
+dist/
