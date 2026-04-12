@@ -5,6 +5,9 @@ description: IPv4 subnet calculator for the command line
 
 color_scheme: dark
 
+# Disable sidebar and search
+search_enabled: false
+nav_enabled: false
+
 plugins:
   - jekyll-remote-theme
-
