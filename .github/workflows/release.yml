@@ -30,7 +30,7 @@ jobs:
           native-image-job-reports: 'true'
 
       - name: Install Clojure
-        uses: DeLaGuardo/setup-clojure@12
+        uses: DeLaGuardo/setup-clojure@13
         with:
           cli: latest
 
