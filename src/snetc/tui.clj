@@ -1,6 +1,7 @@
 (ns snetc.tui
   "Dependency-free terminal UI for interactive subnet planning."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.data.json :as json]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [snetc.plan :as plan]
             [snetc.subnet :as subnet]
@@ -200,6 +201,50 @@
     (spit file (str (str/join "\n" (plan/leaf-cidrs planner)) "\n"))
     (.getPath file)))
 
+(defn- write-json-plan! [planner]
+  (let [file (io/file "snetc-plan.json")]
+    (spit file (str (json/write-str (plan/export-plan planner) :key-fn name) "\n"))
+    (.getPath file)))
+
+(defn- node->yaml-lines [node indent]
+  (let [pad (apply str (repeat indent " "))
+        label-val (if (:label node)
+                    (str "\"" (str/replace (:label node) "\"" "\\\"") "\"")
+                    "null")]
+    (into [(str pad "cidr: " (:cidr node))
+           (str pad "label: " label-val)]
+          (if (seq (:children node))
+            (into [(str pad "children:")]
+                  (mapcat (fn [child]
+                            (let [lines (node->yaml-lines child (+ indent 2))]
+                              (cons (str pad "- " (subs (first lines) (+ indent 2)))
+                                    (rest lines))))
+                          (:children node)))
+            [(str pad "children: null")]))))
+
+(defn- plan->yaml [data]
+  (str/join "\n"
+            (into [(str "version: " (:version data))
+                   (str "parent: " (:parent data))
+                   "root:"]
+                  (node->yaml-lines (:root data) 2))))
+
+(defn- write-yaml-plan! [planner]
+  (let [file (io/file "snetc-plan.yaml")]
+    (spit file (str (plan->yaml (plan/export-plan planner)) "\n"))
+    (.getPath file)))
+
+(defn- export-with-prompt [state saved-mode]
+  (let [fmt (str/lower-case (str/trim (or (prompt-line saved-mode "Export [e]dn/[j]son/[y]aml (enter=edn): ") "")))]
+    (try
+      (let [path (case fmt
+                   "json" (write-json-plan! (:plan state))
+                   "yaml" (write-yaml-plan! (:plan state))
+                   (write-edn-plan! (:plan state)))]
+        (assoc state :message (str "Exported to " path)))
+      (catch Exception e
+        (assoc state :message (ex-message e))))))
+
 (defn- handle-key [state key saved-mode]
   (case key
     :up (move-selection state -1)
@@ -219,10 +264,7 @@
               (assoc :message "Redo"))
     :label (label-selected state saved-mode)
     :jump (jump-to-cidr state saved-mode)
-    :export (try
-              (assoc state :message (str "Exported plan to " (write-edn-plan! (:plan state))))
-              (catch Exception e
-                (assoc state :message (ex-message e))))
+    :export (export-with-prompt state saved-mode)
     :print-cidrs (try
                    (assoc state :message (str "Wrote leaf CIDRs to " (write-leaf-cidrs! (:plan state))))
                    (catch Exception e

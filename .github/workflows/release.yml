@@ -14,8 +14,6 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: snetc-linux-amd64
-          - os: macos-13
-            artifact: snetc-macos-amd64
           - os: macos-latest
             artifact: snetc-macos-aarch64
 
@@ -50,7 +48,54 @@ jobs:
       - name: Rename binary for upload
         run: cp dist/snetc ${{ matrix.artifact }}
 
+      - name: Upload artifact for checksum job
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact }}
+
+  checksum:
+    name: Generate checksums and release notes
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums.txt
+        run: |
+          cd artifacts
+          sha256sum * > ../checksums.txt
+
+      - name: Install git-cliff
+        run: |
+          curl -fsSL https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-x86_64-unknown-linux-musl.tar.gz \
+            | tar xz --wildcards '*/git-cliff' --strip-components=1
+          sudo mv git-cliff /usr/local/bin/git-cliff
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          {
+            echo 'BODY<<EOF'
+            git-cliff --latest --strip header
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload checksums and set release notes
+        uses: softprops/action-gh-release@v2
+        with:
+          files: checksums.txt
+          body: ${{ steps.notes.outputs.BODY }}

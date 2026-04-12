@@ -1,4 +1,4 @@
-.PHONY: run run-dist test spec build native clean container-build container-run
+.PHONY: run run-dist test spec build native clean container-build container-run release changelog
 
 JAR          := target/snetc-0.1.0.jar
 BINARY       := dist/snetc
@@ -53,3 +53,19 @@ container-run:
 clean:
 	clojure -T:build clean
 	rm -rf dist
+
+# Regenerate CHANGELOG.md from git history using git-cliff (https://github.com/orhun/git-cliff).
+# Install: cargo install git-cliff  or  brew install git-cliff
+changelog:
+	git-cliff -o CHANGELOG.md
+
+# Bump the patch version of the latest tag (e.g. v0.1.2 → v0.1.3) and push to trigger CI release.
+# If no tags exist, starts at v0.1.0.
+release:
+	$(eval LATEST := $(shell git tag -l 'v*' | sort -V | tail -1))
+	$(eval TAG := $(if $(LATEST), \
+		v$(shell echo $(LATEST) | sed 's/^v//' | awk -F. '{print $$1"."$$2"."$$3+1}'), \
+		v0.1.0))
+	@echo "Tagging $(TAG)"
+	git tag $(TAG)
+	git push origin $(TAG)

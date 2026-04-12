@@ -4,14 +4,40 @@ IPv4 subnet calculator for the command line.
 
 ## Install
 
-**Requirements:** [Clojure](https://clojure.org/guides/install_clojure) or a [GraalVM](https://www.graalvm.org/) JDK for native builds.
+### Pre-built binary
+
+Download the binary for your platform from the [latest release](https://github.com/pbsladek/snetc/releases/latest):
+
+| Platform | File |
+|---|---|
+| Linux x86\_64 | `snetc-linux-amd64` |
+| macOS Apple Silicon | `snetc-macos-aarch64` |
+
+Verify the checksum, then install:
 
 ```sh
-# Run without building
-make run ARGS="192.168.0.0/22"
+sha256sum --check checksums.txt          # Linux
+shasum -a 256 --check checksums.txt      # macOS
 
-# Build native binary → dist/snetc
-make native
+chmod +x snetc-linux-amd64
+sudo mv snetc-linux-amd64 /usr/local/bin/snetc
+```
+
+### Build from source
+
+**Requirements:** [Clojure CLI](https://clojure.org/guides/install_clojure) and [GraalVM JDK 21+](https://www.graalvm.org/) with `native-image`.
+
+```sh
+git clone https://github.com/pbsladek/snetc.git
+cd snetc
+make native          # compiles → dist/snetc
+sudo cp dist/snetc /usr/local/bin/snetc
+```
+
+To run without compiling:
+
+```sh
+make run ARGS="192.168.0.0/22"
 ```
 
 ## Usage
@@ -210,17 +236,21 @@ Range: 10.0.1.5 – 10.0.1.54  (50 addresses)
 $ snetc tree 10.0.0.0/16
 ```
 
-Opens a keyboard-driven terminal planner for manually splitting and joining subnets. Use arrow keys or `j`/`k` to select a visible subnet, `s` or Enter to split it, `J` or Backspace to join sibling leaves, `l` to label a subnet, `u`/`r` for undo/redo, `e` to export the plan to `snetc-plan.edn`, `p` to write leaf CIDRs to `snetc-leaves.txt`, and `q` to quit. The existing static tree remains available as `snetc <cidr> --tree <prefix>`.
+Opens a keyboard-driven terminal planner for manually splitting and joining subnets. Use arrow keys or `j`/`k` to select a visible subnet, `s` or Enter to split it, `J` or Backspace to join sibling leaves, `l` to label a subnet, `u`/`r` for undo/redo, `e` to export the plan (prompts for `edn`, `json`, or `yaml`), `p` to write leaf CIDRs to `snetc-leaves.txt`, and `q` to quit. The existing static tree remains available as `snetc <cidr> --tree <prefix>`.
 
 ## Development
 
 ```sh
-make test     # run tests
-make spec     # run generative spec tests
-make build    # build uberjar → target/snetc-0.1.0.jar
-make native   # compile native binary → dist/snetc
-make clean    # remove build artifacts
+make test       # run tests
+make spec       # run generative spec tests
+make build      # build uberjar → target/snetc-0.1.0.jar
+make native     # compile native binary → dist/snetc
+make clean      # remove build artifacts
+make changelog  # regenerate CHANGELOG.md (requires git-cliff)
+make release    # bump patch version, tag, and push to trigger CI release
 ```
+
+Release notes are generated automatically from commit messages when a tag is pushed. To preview them locally, run `git-cliff --latest` (install via `brew install git-cliff` or `cargo install git-cliff`). Commit message prefixes like `feat:`, `fix:`, `docs:`, `refactor:`, `test:` are used to group entries; unprefixed commits land in "Changes".
 
 ## License
 
