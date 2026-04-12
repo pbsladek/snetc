@@ -6,3 +6,5 @@
 .calva/
 target/
 dist/
+snetc-leaves.txt
+snetc-plan.edn
