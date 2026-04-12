@@ -2,9 +2,7 @@
   "Terminal display: all human-readable output for snetc commands."
   (:require [clojure.string   :as str]
             [snetc.ip         :as ip]
-            [snetc.subnet     :as subnet]
-            [snetc.classify   :as classify]
-            [snetc.ops        :as ops]))
+            [snetc.subnet     :as subnet]))
 
 (defn- label-row [label value]
   (format "  %-18s %s" (str label ":") value))
@@ -22,7 +20,8 @@
   [info]
   (println (str "\n" (:cidr info)))
   (println (label-row "Network"       (:network    info)))
-  (println (label-row "Broadcast"     (:broadcast  info)))
+  (when (:broadcast info)
+    (println (label-row "Broadcast"   (:broadcast  info))))
   (println (label-row "First Host"    (:first-host info)))
   (println (label-row "Last Host"     (:last-host  info)))
   (println (label-row "Hosts"         (:hosts      info)))
@@ -43,7 +42,7 @@
                        (:mask       s)
                        (:first-host s)
                        (:last-host  s)
-                       (:broadcast  s)
+                       (or (:broadcast s) "-")
                        (:hosts      s))))
     (println)))
 
@@ -83,9 +82,9 @@
   (println))
 
 (defn print-contains-result
-  "Prints a containment table for ips against cidr to stdout."
-  [cidr ips]
-  (let [info (subnet/subnet-info cidr)
+  "Prints a containment table for ips against info (pre-computed subnet-info map) to stdout."
+  [info ips]
+  (let [cidr (:cidr info)
         fmt  "  %-20s %-6s %s"]
     (println (str "\nSubnet: " cidr "\n"))
     (println (format fmt "IP" "Match" "Note"))
@@ -101,45 +100,47 @@
     (println)))
 
 (defn print-free-result
-  "Prints free space within parent-cidr after removing allocated-cidrs to stdout."
-  [parent-cidr allocated-cidrs result-cidrs]
+  "Prints free space within parent-cidr after removing allocated-cidrs to stdout.
+  result-infos is a seq of pre-computed subnet-info maps."
+  [parent-cidr allocated-cidrs result-infos]
   (println (str "\nFree space in " parent-cidr
                 " (excluding " (count allocated-cidrs) " allocated block(s)):\n"))
-  (if (empty? result-cidrs)
+  (if (empty? result-infos)
     (println "  (none – fully allocated)\n")
     (let [fmt "  %-20s %-18s %s"]
       (println (format fmt "CIDR" "Subnet Mask" "Hosts"))
       (println (apply str (repeat 50 "-")))
-      (doseq [c result-cidrs]
-        (let [info (subnet/subnet-info c)]
-          (println (format fmt c (:mask info) (:hosts info)))))
+      (doseq [info result-infos]
+        (println (format fmt (:cidr info) (:mask info) (:hosts info))))
       (println))))
 
 (defn print-diff-result
-  "Prints a sorted diff of before-cidrs vs after-cidrs to stdout."
-  [before-cidrs after-cidrs {:keys [added removed unchanged]}]
+  "Prints a sorted diff of before-cidrs vs after-cidrs to stdout.
+  sorted-entries is a pre-sorted vec of [status cidr] pairs from the handler."
+  [before-cidrs after-cidrs added removed unchanged sorted-entries]
   (println (format "\nDiff: %d → %d network(s)\n" (count before-cidrs) (count after-cidrs)))
-  (let [all (->> (concat (map #(vector :removed   %) removed)
-                         (map #(vector :unchanged %) unchanged)
-                         (map #(vector :added     %) added))
-                 (sort-by (fn [[_ c]] (first (subnet/cidr->range c)))))]
-    (doseq [[status cidr] all]
-      (println (format "  %s %s"
-                       (case status :added "[+]" :removed "[-]" :unchanged "[=]")
-                       cidr))))
+  (doseq [[status cidr] sorted-entries]
+    (println (format "  %s %s"
+                     (case status :added "[+]" :removed "[-]" :unchanged "[=]")
+                     cidr)))
   (println (format "\n  Added: %d  Removed: %d  Unchanged: %d\n"
                    (count added) (count removed) (count unchanged))))
 
 (defn print-classify-result
-  "Prints RFC classification for each input to stdout."
-  [inputs]
-  (let [fmt "  %-22s %-32s %-12s %s"]
+  "Prints RFC classification for each pre-computed classification map to stdout."
+  [classifications]
+  (let [;; Compute category column width dynamically so spanning CIDRs like
+        ;; "Documentation TEST-NET-3 → Private" don't overflow into the RFC column.
+        cat-width (apply max 8
+                         (map (fn [{:keys [name spans? bcast-name]}]
+                                (count (str name (when spans? (str " → " bcast-name)))))
+                              classifications))
+        fmt (str "  %-22s %-" (+ cat-width 2) "s %-12s %s")]
     (println)
     (println (format fmt "Input" "Category" "RFC" "Routable"))
-    (println (apply str (repeat 80 "-")))
-    (doseq [input inputs]
-      (let [{:keys [name rfc routable? spans? bcast-name]} (classify/classify input)
-            rfc-str (if (str/blank? rfc) "-" rfc)
+    (println (apply str (repeat (+ 22 cat-width 30) "-")))
+    (doseq [{:keys [input name rfc routable? spans? bcast-name]} classifications]
+      (let [rfc-str (if (str/blank? rfc) "-" rfc)
             note    (when spans? (format " → %s" bcast-name))]
         (println (format fmt input (str name (or note "")) rfc-str (if routable? "yes" "no")))))
     (println)))
@@ -189,16 +190,16 @@
       (println (format "\n  %d overlap(s) found.\n" (count overlaps))))))
 
 (defn print-lpm-result
-  "Prints longest-prefix-match results for ips against routes to stdout."
-  [routes ips]
+  "Prints longest-prefix-match results to stdout.
+  results is a seq of {:ip :match :prefix-str} maps pre-computed in the handler."
+  [routes results]
   (let [fmt "  %-20s %-22s %s"]
     (println (format "\nRouting table: %d route(s)\n" (count routes)))
     (println (format fmt "IP" "Best Match" "Prefix"))
     (println (apply str (repeat 55 "-")))
-    (doseq [ip ips]
-      (let [match (ops/longest-prefix-match ip routes)]
-        (println (format fmt
-                         ip
-                         (or match "(no match)")
-                         (if match (str "/" (:prefix (subnet/parse-cidr match))) "-")))))
+    (doseq [{:keys [ip match prefix-str]} results]
+      (println (format fmt
+                       ip
+                       (or match "(no match)")
+                       (or prefix-str "-"))))
     (println)))

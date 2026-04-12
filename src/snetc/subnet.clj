@@ -25,6 +25,11 @@
       (throw (ex-info (str "Invalid IP address: " ip-str) {:cidr cidr})))
     (when (nil? prefix-str)
       (throw (ex-info (str "Missing prefix length: " cidr) {:cidr cidr})))
+    ;; Reject leading zeros ("024"), whitespace (" 24"), and non-numeric input.
+    ;; The IP regex already rejects leading zeros in octets; apply the same
+    ;; strictness to the prefix.
+    (when-not (re-matches #"0|[1-9]\d?" prefix-str)
+      (throw (ex-info (str "Invalid prefix: " prefix-str) {:cidr cidr})))
     (let [prefix (try (Integer/parseInt prefix-str)
                       (catch Exception _
                         (throw (ex-info (str "Invalid prefix: " prefix-str) {:cidr cidr}))))]
@@ -42,15 +47,17 @@
         mask  (ip/prefix->mask prefix)
         wild  (ip/wildcard-mask prefix)
         hosts (ip/usable-hosts prefix)]
-    {:network    (ip/long->ip net)
-     :broadcast  (ip/long->ip bcast)
-     :first-host (if (>= prefix 31) (ip/long->ip net)   (ip/long->ip (inc net)))
-     :last-host  (if (>= prefix 31) (ip/long->ip bcast) (ip/long->ip (dec bcast)))
-     :hosts      hosts
-     :mask       (ip/long->ip mask)
-     :wildcard   (ip/long->ip wild)
-     :prefix     prefix
-     :cidr       (str (ip/long->ip net) "/" prefix)}))
+    (cond-> {:network    (ip/long->ip net)
+             :first-host (if (>= prefix 31) (ip/long->ip net)   (ip/long->ip (inc net)))
+             :last-host  (if (>= prefix 31) (ip/long->ip bcast) (ip/long->ip (dec bcast)))
+             :hosts      hosts
+             :mask       (ip/long->ip mask)
+             :wildcard   (ip/long->ip wild)
+             :prefix     prefix
+             :cidr       (str (ip/long->ip net) "/" prefix)}
+      ;; /32 host routes have no distinct broadcast address — the concept is
+      ;; undefined for a single-host route. Omit :broadcast to avoid confusion.
+      (< prefix 32) (assoc :broadcast (ip/long->ip bcast)))))
 
 (defn cidr->range
   "Returns [start end] as inclusive longs for cidr."
@@ -83,6 +90,9 @@
 (defn split-subnets
   "Returns all /new-prefix subnets within cidr. Throws if new-prefix < base prefix."
   [cidr new-prefix]
+  (when-not (valid-prefix? new-prefix)
+    (throw (ex-info (str "New prefix must be 0–32, got: " new-prefix)
+                    {:new-prefix new-prefix})))
   (let [{:keys [ip-str prefix]} (parse-cidr cidr)]
     (when (< new-prefix prefix)
       (throw (ex-info (str "Split prefix /" new-prefix
@@ -91,6 +101,10 @@
     (let [net  (ip/network-addr (ip/ip->long ip-str) prefix)
           n    (bit-shift-left 1 (- new-prefix prefix))
           size (bit-shift-left 1 (- 32 new-prefix))]
+      (when (> n 65536)
+        (throw (ex-info (str "Split would produce " n " subnets; limit is 65536. "
+                             "Use --tree for hierarchical splitting.")
+                        {:cidr cidr :new-prefix new-prefix :count n})))
       (for [i (range n)]
         (subnet-info (str (ip/long->ip (+ net (* i size))) "/" new-prefix))))))
 

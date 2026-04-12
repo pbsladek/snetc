@@ -70,8 +70,10 @@
 (s/def ::cidr       ::cidr-str)
 
 (s/def ::subnet-info-map
-  (s/keys :req-un [::network ::broadcast ::first-host ::last-host
-                   ::hosts ::mask ::wildcard ::prefix ::cidr]))
+  ;; :broadcast is absent for /32 host routes — use :opt-un.
+  (s/keys :req-un [::network ::first-host ::last-host
+                   ::hosts ::mask ::wildcard ::prefix ::cidr]
+          :opt-un [::broadcast]))
 
 ;; Keys for classify results.
 (s/def ::input      string?)
@@ -182,9 +184,10 @@
                 net (ip/network-addr (ip/ip->long ip-str) prefix)]
             (and (= (:prefix ret) prefix)
                  (= (:network ret) (ip/long->ip net))
-                 ;; network address is always <= broadcast
-                 (<= (ip/ip->long (:network ret))
-                     (ip/ip->long (:broadcast ret)))))))
+                 ;; /32 omits :broadcast; otherwise network <= broadcast.
+                 (or (= prefix 32)
+                     (<= (ip/ip->long (:network ret))
+                         (ip/ip->long (:broadcast ret))))))))
 
 (s/fdef subnet/cidr->range
   :args (s/cat :cidr ::cidr-str)

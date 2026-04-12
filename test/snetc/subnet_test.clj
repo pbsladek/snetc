@@ -76,10 +76,10 @@
       (is (= "255.0.0.0"      (:mask       info)))
       (is (= "0.255.255.255"  (:wildcard   info)))))
 
-  (testing "/32 host route — network, broadcast, first, and last are all the same address"
+  (testing "/32 host route — no :broadcast key (undefined for a single-host route)"
     (let [info (subnet-info "192.168.1.1/32")]
       (is (= "192.168.1.1" (:network    info)))
-      (is (= "192.168.1.1" (:broadcast  info)))
+      (is (nil?            (:broadcast  info)))
       (is (= "192.168.1.1" (:first-host info)))
       (is (= "192.168.1.1" (:last-host  info)))
       (is (= 1             (:hosts      info)))))

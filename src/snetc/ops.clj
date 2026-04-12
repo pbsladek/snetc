@@ -16,7 +16,12 @@
 
 (defn- subtract-ranges
   "Returns the parts of a-ranges not covered by b-ranges.
-  Both seqs must be sorted and non-overlapping."
+  Both seqs must be sorted and non-overlapping.
+
+  Safety note: when bs <= pos (subtrahend starts at/before current position),
+  the recur advances pos to (inc be). This is safe only because the sorted
+  non-overlapping precondition guarantees be >= pos at that point — all callers
+  pass output from merge-ranges which enforces this invariant."
   [a-ranges b-ranges]
   (mapcat
     (fn [[as ae]]
@@ -35,13 +40,14 @@
     a-ranges))
 
 (defn aggregate
-  "Returns the minimal CIDR set covering the same address space as cidrs."
+  "Returns the minimal CIDR set covering the same address space as cidrs, as a vector."
   [cidrs]
   (->> cidrs
        (map subnet/cidr->range)
        (sort-by first)
        merge-ranges
-       (mapcat (fn [[s e]] (subnet/range->cidrs s e)))))
+       (mapcat (fn [[s e]] (subnet/range->cidrs s e)))
+       vec))
 
 (defn free-space
   "Returns CIDR strings for unallocated space in parent-cidr after removing allocated-cidrs.
@@ -67,7 +73,13 @@
 
 (defn cidr-diff
   "Returns {:added :removed :unchanged} CIDR lists comparing before-cidrs to after-cidrs.
-  Both sets are aggregated before comparison."
+  Both sets are aggregated before comparison.
+
+  Design note: :unchanged is derived from the before-ranges (br) minus what was
+  removed, i.e. the parts of the old set that still exist in the new set. It is
+  intentionally expressed in terms of the before address space — if the same
+  address space is split differently between before and after, :unchanged reflects
+  the before-side CIDR blocks."
   [before-cidrs after-cidrs]
   (let [br        (->> before-cidrs (map subnet/cidr->range) (sort-by first) merge-ranges)
         ar        (->> after-cidrs  (map subnet/cidr->range) (sort-by first) merge-ranges)
@@ -76,6 +88,7 @@
         ->cidrs   (fn [ranges] (vec (mapcat (fn [[s e]] (subnet/range->cidrs s e)) ranges)))]
     {:added     (->cidrs added-r)
      :removed   (->cidrs removed-r)
+     ;; unchanged = before minus removed = what stayed the same, as before-side CIDRs.
      :unchanged (->cidrs (subtract-ranges br removed-r))}))
 
 (defn- overlap-type [[s1 e1] [s2 e2]]
@@ -92,11 +105,11 @@
   (let [indexed (mapv (fn [i c] [i c (subnet/cidr->range c)])
                       (range (count cidrs))
                       cidrs)]
-    (for [[i ca ra] indexed
-          [j cb rb] indexed
-          :when (< i j)
-          :when (let [[s1 e1] ra [s2 e2] rb] (and (<= s1 e2) (<= s2 e1)))]
-      {:a ca :b cb :type (overlap-type ra rb)})))
+    (vec (for [[i ca ra] indexed
+               [j cb rb] indexed
+               :when (< i j)
+               :when (let [[s1 e1] ra [s2 e2] rb] (and (<= s1 e2) (<= s2 e1)))]
+           {:a ca :b cb :type (overlap-type ra rb)}))))
 
 (defn longest-prefix-match
   "Returns the longest-prefix-matching CIDR from routes for ip, or nil."
@@ -127,14 +140,24 @@
 
 (defn plan-vlsm
   "Returns a vector of {:info :requested} VLSM allocations for host-counts within parent-cidr.
-  Allocates largest subnets first to minimise alignment waste."
+  Allocates largest subnets first to minimise alignment waste.
+
+  Design limitation: address space consumed by alignment padding between subnets is
+  not tracked in the output. Callers that need to account for waste should call
+  (ops/free-space parent-cidr allocated-cidrs) post-hoc."
   [parent-cidr host-counts]
   (let [[pstart pend] (subnet/cidr->range parent-cidr)]
     (loop [counts (sort > host-counts)
            pos    pstart
            result []]
-      (if (empty? counts)
-        result
+      (cond
+        (empty? counts) result
+        ;; Guard: pos can reach (inc 0xFFFFFFFF) = 2^32 after the last allocation.
+        ;; Terminate early to avoid alignment arithmetic on an out-of-range value.
+        (> pos pend)
+        (throw (ex-info (str "Not enough space in " parent-cidr
+                             " for remaining allocations") {}))
+        :else
         (let [n         (first counts)
               prefix    (hosts->min-prefix n)
               size      (bit-shift-left 1 (- 32 prefix))

@@ -1,5 +1,5 @@
 (ns snetc.ip-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [snetc.ip :refer [ip->long long->ip
                               prefix->mask mask->prefix
                               wildcard-mask network-addr broadcast-addr
