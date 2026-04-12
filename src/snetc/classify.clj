@@ -4,11 +4,9 @@
             [snetc.ip     :as ip]
             [snetc.subnet :as subnet]))
 
-;;; Special ranges ordered most-specific first (longest prefix first) so that
-;;; the first match wins correctly when a range is contained within another
-;;; (e.g. 255.255.255.255/32 must be tested before the enclosing 240.0.0.0/4).
-;;; :start/:end are pre-computed longs so classification is a numeric bounds
-;;; check rather than a regex parse on every call.
+;;; Longest-prefix-first so the most-specific entry wins on containment
+;;; (e.g. 255.255.255.255/32 before the enclosing 240.0.0.0/4).
+;;; :start/:end are pre-computed longs to avoid re-parsing on every call.
 (def ^:private special-ranges
   (mapv (fn [{:keys [cidr] :as entry}]
           (let [[s e] (subnet/cidr->range cidr)]
@@ -38,8 +36,7 @@
          {:cidr "224.0.0.0/4"        :name "Multicast"                 :rfc "RFC 1112"}]))
 
 (defn- match-for
-  "Return {:name … :rfc …} for the first special range containing ip-n (long), or Public.
-   Pure numeric bounds check — no string conversion at call time."
+  "Returns {:name :rfc} for the first special range containing ip-n, or Public."
   [ip-n]
   (or (some (fn [{:keys [name rfc start end]}]
               (when (<= start ip-n end) {:name name :rfc rfc}))
@@ -47,10 +44,9 @@
       {:name "Public" :rfc ""}))
 
 (defn classify
-  "Classify an IP or CIDR by RFC designation.
-   For CIDRs the network address is used; :spans? is set when the broadcast
-   address falls into a different category.
-   Returns {:input :name :rfc :routable? :spans?}."
+  "Returns {:input :name :rfc :routable? :spans?} for ip-or-cidr string.
+  CIDRs are classified by network address. :spans? is true when the broadcast
+  address falls in a different category; :bcast-name is added in that case."
   [input]
   (let [is-cidr? (str/includes? input "/")
         {:keys [ip-str prefix]} (subnet/parse-cidr (if is-cidr? input (str input "/32")))

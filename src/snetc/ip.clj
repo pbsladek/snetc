@@ -3,7 +3,7 @@
   (:require [clojure.string :as str]))
 
 (defn ip->long
-  "Parse a dotted-decimal IPv4 string into a 32-bit unsigned value held in a long."
+  "Returns the 32-bit unsigned long value of dotted-decimal IPv4 string ip."
   [ip]
   (let [[a b c d] (map #(Long/parseLong %) (str/split ip #"\."))]
     (+ (bit-shift-left a 24)
@@ -12,7 +12,7 @@
        d)))
 
 (defn long->ip
-  "Format a 32-bit unsigned long as a dotted-decimal IPv4 string."
+  "Returns the dotted-decimal string for 32-bit unsigned long n."
   [n]
   (str/join "." [(bit-and (bit-shift-right n 24) 0xFF)
                  (bit-and (bit-shift-right n 16) 0xFF)
@@ -20,35 +20,35 @@
                  (bit-and n 0xFF)]))
 
 (defn prefix->mask
-  "Convert a CIDR prefix length (0–32) to a 32-bit unsigned mask in a long."
+  "Returns the 32-bit subnet mask for prefix length (0–32)."
   [prefix]
   (if (zero? prefix)
     0
     (bit-and 0xFFFFFFFF (bit-shift-left -1 (- 32 prefix)))))
 
 (defn mask->prefix
-  "Convert a 32-bit mask to its CIDR prefix length."
+  "Returns the prefix length of a 32-bit contiguous subnet mask."
   [mask]
   (Long/bitCount mask))
 
 (defn wildcard-mask
-  "Return the wildcard (host) mask for a given prefix length."
+  "Returns the wildcard (inverse) mask for prefix."
   [prefix]
   (bit-xor (prefix->mask prefix) 0xFFFFFFFF))
 
 (defn network-addr
-  "Apply the prefix mask to an IP long to get the network address."
+  "Returns ip with host bits zeroed to prefix length."
   [ip prefix]
   (bit-and ip (prefix->mask prefix)))
 
 (defn broadcast-addr
-  "Compute the broadcast address for a network/prefix."
+  "Returns the broadcast address for network at prefix length."
   [network prefix]
   (bit-or network (wildcard-mask prefix)))
 
 (defn usable-hosts
-  "Number of usable host addresses for a prefix length.
-   /32 → 1 (the address itself), /31 → 2 (RFC 3021 point-to-point)."
+  "Returns the number of usable host addresses for prefix.
+  /31 returns 2 (RFC 3021 point-to-point); /32 returns 1."
   [prefix]
   (cond
     (= prefix 32) 1

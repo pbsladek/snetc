@@ -3,10 +3,8 @@
   (:require [snetc.ip     :as ip]
             [snetc.subnet :as subnet]))
 
-;;; ── Internal range helpers ───────────────────────────────────────────────────
-
 (defn- merge-ranges
-  "Merge a sorted seq of [start end] ranges into the minimal non-overlapping set."
+  "Returns the minimal non-overlapping set of ranges from a sorted seq."
   [ranges]
   (reduce (fn [acc [s e]]
             (let [[as ae] (peek acc)]
@@ -17,8 +15,8 @@
           ranges))
 
 (defn- subtract-ranges
-  "Remove all parts of `a-ranges` covered by `b-ranges`.
-   Both sequences must already be sorted and non-overlapping."
+  "Returns the parts of a-ranges not covered by b-ranges.
+  Both seqs must be sorted and non-overlapping."
   [a-ranges b-ranges]
   (mapcat
     (fn [[as ae]]
@@ -36,10 +34,8 @@
                 (recur (inc be) (rest subs) acc)))))))
     a-ranges))
 
-;;; ── Aggregation ──────────────────────────────────────────────────────────────
-
 (defn aggregate
-  "Aggregate a collection of CIDR strings into the minimal covering set."
+  "Returns the minimal CIDR set covering the same address space as cidrs."
   [cidrs]
   (->> cidrs
        (map subnet/cidr->range)
@@ -47,11 +43,9 @@
        merge-ranges
        (mapcat (fn [[s e]] (subnet/range->cidrs s e)))))
 
-;;; ── Free space ───────────────────────────────────────────────────────────────
-
 (defn free-space
-  "Return CIDRs for unallocated space within parent-cidr after excluding allocated CIDRs.
-   Allocated entries outside the parent are silently ignored."
+  "Returns CIDR strings for unallocated space in parent-cidr after removing allocated-cidrs.
+  Allocations that extend beyond the parent boundary are clipped."
   [parent-cidr allocated-cidrs]
   (let [[pstart pend] (subnet/cidr->range parent-cidr)
         used  (->> allocated-cidrs
@@ -71,11 +65,9 @@
                            (if (< pos s) (conj acc [pos (dec s)]) acc)))))]
     (mapcat (fn [[s e]] (subnet/range->cidrs s e)) gaps)))
 
-;;; ── CIDR diff ────────────────────────────────────────────────────────────────
-
 (defn cidr-diff
-  "Compare two sets of CIDRs after aggregation.
-   Returns {:added […] :removed […] :unchanged […]} as CIDR string lists."
+  "Returns {:added :removed :unchanged} CIDR lists comparing before-cidrs to after-cidrs.
+  Both sets are aggregated before comparison."
   [before-cidrs after-cidrs]
   (let [br        (->> before-cidrs (map subnet/cidr->range) (sort-by first) merge-ranges)
         ar        (->> after-cidrs  (map subnet/cidr->range) (sort-by first) merge-ranges)
@@ -86,8 +78,6 @@
      :removed   (->cidrs removed-r)
      :unchanged (->cidrs (subtract-ranges br removed-r))}))
 
-;;; ── Overlap detection ────────────────────────────────────────────────────────
-
 (defn- overlap-type [[s1 e1] [s2 e2]]
   (cond
     (and (<= s1 s2) (>= e1 e2)) :a-contains-b
@@ -95,11 +85,10 @@
     :else                        :partial))
 
 (defn find-overlaps
-  "Return all overlapping pairs from a collection of CIDRs.
-   Each result is {:a cidr-a :b cidr-b :type :a-contains-b|:b-contains-a|:partial}."
+  "Returns all overlapping pairs in cidrs as {:a :b :type} maps.
+  :type is :a-contains-b, :b-contains-a, or :partial."
   [cidrs]
-  ;; Materialise to a vector so cidr->range is computed once per CIDR rather
-  ;; than once per outer-loop iteration of the nested for comprehension.
+  ;; mapv so cidr->range is called once per CIDR, not once per pair.
   (let [indexed (mapv (fn [i c] [i c (subnet/cidr->range c)])
                       (range (count cidrs))
                       cidrs)]
@@ -109,14 +98,11 @@
           :when (let [[s1 e1] ra [s2 e2] rb] (and (<= s1 e2) (<= s2 e1)))]
       {:a ca :b cb :type (overlap-type ra rb)})))
 
-;;; ── Longest prefix match ─────────────────────────────────────────────────────
-
 (defn longest-prefix-match
-  "Find the most specific (longest-prefix) CIDR from routes that contains ip.
-   Returns the matching CIDR string, or nil if no route matches."
+  "Returns the longest-prefix-matching CIDR from routes for ip, or nil."
   [ip routes]
-  ;; Parse each route once; reuse the parsed prefix for both containment check
-  ;; and sort key, avoiding a second parse-cidr call per matching route.
+  ;; keep yields [prefix route] so the parsed prefix serves both the
+  ;; containment test and the sort key without a second parse-cidr call.
   (let [ip-n (ip/ip->long ip)]
     (->> routes
          (keep (fn [route]
@@ -128,10 +114,8 @@
          last
          second)))
 
-;;; ── VLSM planner ─────────────────────────────────────────────────────────────
-
 (defn hosts->min-prefix
-  "Return the tightest (largest) prefix length whose usable host count >= n."
+  "Returns the smallest prefix length whose usable host count is >= n."
   [n]
   (when (< n 1)
     (throw (ex-info (str "Host count must be ≥ 1, got: " n) {:n n})))
@@ -142,9 +126,8 @@
       :else                  (recur (dec p)))))
 
 (defn plan-vlsm
-  "Allocate subnets within parent-cidr for each host count in host-counts.
-   Counts are sorted largest-first to minimise alignment waste.
-   Returns a vector of {:info subnet-info-map :requested n} in allocation order."
+  "Returns a vector of {:info :requested} VLSM allocations for host-counts within parent-cidr.
+  Allocates largest subnets first to minimise alignment waste."
   [parent-cidr host-counts]
   (let [[pstart pend] (subnet/cidr->range parent-cidr)]
     (loop [counts (sort > host-counts)

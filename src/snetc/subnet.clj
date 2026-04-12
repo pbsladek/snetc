@@ -3,24 +3,22 @@
   (:require [clojure.string :as str]
             [snetc.ip :as ip]))
 
-;;; ── Parsing & validation ─────────────────────────────────────────────────────
-
-;; Each octet: 0-9 | 10-99 | 100-199 | 200-249 | 250-255 — no leading zeros.
+;; Matches each octet 0–255; leading zeros are rejected.
 (def ^:private ip-re
   #"^(25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)$")
 
 (defn valid-ip?
-  "Return true iff s is a well-formed dotted-decimal IPv4 address (no leading zeros)."
+  "Returns true if s is a valid dotted-decimal IPv4 address with no leading zeros."
   [s]
   (boolean (re-matches ip-re s)))
 
 (defn valid-prefix?
-  "Return true iff p is an integer in [0, 32]."
+  "Returns true if p is an integer in [0, 32]."
   [p]
   (<= 0 p 32))
 
 (defn parse-cidr
-  "Parse 'a.b.c.d/n' into {:ip-str … :prefix …}. Throws ex-info on bad input."
+  "Returns {:ip-str :prefix} for CIDR string. Throws ex-info on invalid input."
   [cidr]
   (let [[ip-str prefix-str] (str/split cidr #"/" 2)]
     (when-not (valid-ip? ip-str)
@@ -34,11 +32,8 @@
         (throw (ex-info (str "Prefix must be 0–32, got: " prefix) {:cidr cidr})))
       {:ip-str ip-str :prefix prefix})))
 
-;;; ── Subnet info ──────────────────────────────────────────────────────────────
-
 (defn subnet-info
-  "Given a CIDR string like '192.168.0.0/22', return a map of subnet details.
-   Host bits in the input are silently masked off (normalised to network address)."
+  "Returns a map of subnet details for cidr. Host bits in the input are masked off."
   [cidr]
   (let [{:keys [ip-str prefix]} (parse-cidr cidr)
         ip-n  (ip/ip->long ip-str)
@@ -57,17 +52,15 @@
      :prefix     prefix
      :cidr       (str (ip/long->ip net) "/" prefix)}))
 
-;;; ── Range utilities ──────────────────────────────────────────────────────────
-
 (defn cidr->range
-  "Return [start end] (both inclusive longs) for a CIDR string."
+  "Returns [start end] as inclusive longs for cidr."
   [cidr]
   (let [{:keys [ip-str prefix]} (parse-cidr cidr)
         net (ip/network-addr (ip/ip->long ip-str) prefix)]
     [net (ip/broadcast-addr net prefix)]))
 
 (defn range->cidrs
-  "Convert an inclusive [start end] IP range (longs) to a minimal list of CIDR strings."
+  "Returns the minimal list of CIDR strings covering the inclusive [start end] range."
   [start end]
   (when (<= start end)
     (let [tz     (if (zero? start) 32 (Long/numberOfTrailingZeros start))
@@ -80,19 +73,15 @@
       (cons (str (ip/long->ip start) "/" prefix)
             (lazy-seq (range->cidrs (inc blkend) end))))))
 
-;;; ── IP containment ───────────────────────────────────────────────────────────
-
 (defn ip-in-cidr?
-  "Return true if the bare IP string falls within the given CIDR block."
+  "Returns true if ip falls within cidr."
   [ip cidr]
   (let [{:keys [ip-str prefix]} (parse-cidr cidr)
         net (ip/network-addr (ip/ip->long ip-str) prefix)]
     (= net (ip/network-addr (ip/ip->long ip) prefix))))
 
-;;; ── Subnet splitting ─────────────────────────────────────────────────────────
-
 (defn split-subnets
-  "Return all /new-prefix subnets contained within the given CIDR block."
+  "Returns all /new-prefix subnets within cidr. Throws if new-prefix < base prefix."
   [cidr new-prefix]
   (let [{:keys [ip-str prefix]} (parse-cidr cidr)]
     (when (< new-prefix prefix)
@@ -105,11 +94,8 @@
       (for [i (range n)]
         (subnet-info (str (ip/long->ip (+ net (* i size))) "/" new-prefix))))))
 
-;;; ── Subnet tree ──────────────────────────────────────────────────────────────
-
 (defn subnet-tree
-  "Return a tree of subnets splitting `cidr` down to `max-prefix`.
-   Each node is {:info … :children […]}."
+  "Returns a tree splitting cidr down to max-prefix. Each node is {:info :children}."
   [cidr max-prefix]
   (let [info (subnet-info cidr)]
     {:info     info

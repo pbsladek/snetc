@@ -6,23 +6,19 @@
             [snetc.classify   :as classify]
             [snetc.ops        :as ops]))
 
-;;; ── Internal helpers ─────────────────────────────────────────────────────────
-
 (defn- label-row [label value]
   (format "  %-18s %s" (str label ":") value))
 
 (defn- ip-role
-  "Return :network, :broadcast, or :host for an IP relative to a subnet-info map."
+  "Returns :network, :broadcast, or :host for ip relative to info."
   [ip info]
   (cond
     (= ip (:network   info)) :network
     (= ip (:broadcast info)) :broadcast
     :else                    :host))
 
-;;; ── Print functions ──────────────────────────────────────────────────────────
-
 (defn print-subnet-info
-  "Pretty-print a subnet-info map to stdout."
+  "Prints a formatted summary of info to stdout."
   [info]
   (println (str "\n" (:cidr info)))
   (println (label-row "Network"       (:network    info)))
@@ -35,7 +31,7 @@
   (println))
 
 (defn print-split-table
-  "Print a table of subnets from split-subnets."
+  "Prints a table of subnets to stdout."
   [subnets]
   (let [fmt "  %-20s %-18s %-18s %-18s %-18s %s"]
     (println)
@@ -52,7 +48,7 @@
     (println)))
 
 (defn- tree-lines
-  "Produce lines for the subnet tree with ASCII box-drawing indentation."
+  "Returns formatted lines for node, indented with ASCII box-drawing characters."
   [node prefix-str last?]
   (let [info     (:info node)
         children (:children node)
@@ -66,7 +62,7 @@
                   children))))
 
 (defn print-subnet-tree
-  "Print a hierarchical subnet split tree."
+  "Prints the subnet tree rooted at root to stdout."
   [root]
   (let [info     (:info root)
         children (:children root)]
@@ -79,7 +75,7 @@
     (println)))
 
 (defn print-aggregate-result
-  "Print aggregated CIDR list with before/after counts."
+  "Prints aggregated CIDRs with input/output counts to stdout."
   [input-cidrs result-cidrs]
   (println (format "\nAggregated %d network(s) into %d:" (count input-cidrs) (count result-cidrs)))
   (doseq [c result-cidrs]
@@ -87,7 +83,7 @@
   (println))
 
 (defn print-contains-result
-  "Print a table showing which IPs fall within the subnet."
+  "Prints a containment table for ips against cidr to stdout."
   [cidr ips]
   (let [info (subnet/subnet-info cidr)
         fmt  "  %-20s %-6s %s"]
@@ -105,7 +101,7 @@
     (println)))
 
 (defn print-free-result
-  "Print the free (unallocated) subnets within a parent CIDR."
+  "Prints free space within parent-cidr after removing allocated-cidrs to stdout."
   [parent-cidr allocated-cidrs result-cidrs]
   (println (str "\nFree space in " parent-cidr
                 " (excluding " (count allocated-cidrs) " allocated block(s)):\n"))
@@ -120,7 +116,7 @@
       (println))))
 
 (defn print-diff-result
-  "Print a before/after CIDR diff."
+  "Prints a sorted diff of before-cidrs vs after-cidrs to stdout."
   [before-cidrs after-cidrs {:keys [added removed unchanged]}]
   (println (format "\nDiff: %d → %d network(s)\n" (count before-cidrs) (count after-cidrs)))
   (let [all (->> (concat (map #(vector :removed   %) removed)
@@ -135,7 +131,7 @@
                    (count added) (count removed) (count unchanged))))
 
 (defn print-classify-result
-  "Print RFC classification for a list of IPs/CIDRs."
+  "Prints RFC classification for each input to stdout."
   [inputs]
   (let [fmt "  %-22s %-32s %-12s %s"]
     (println)
@@ -149,7 +145,7 @@
     (println)))
 
 (defn print-range-result
-  "Print the minimal CIDR list for an IP range."
+  "Prints the minimal CIDR list for the range start-ip to end-ip to stdout."
   [start-ip end-ip cidrs]
   (let [total (inc (- (ip/ip->long end-ip) (ip/ip->long start-ip)))]
     (println (format "\nRange: %s – %s  (%d address%s)\n"
@@ -158,7 +154,7 @@
     (println (format "\n  %d CIDR block(s)\n" (count cidrs)))))
 
 (defn print-vlsm-result
-  "Print the VLSM allocation table."
+  "Prints the VLSM allocation table for parent-cidr to stdout."
   [parent-cidr allocations]
   (let [fmt "  %-4s %-12s %-20s %-18s %-16s %-16s %s"]
     (println (str "\nVLSM plan for " parent-cidr "\n"))
@@ -176,7 +172,7 @@
     (println)))
 
 (defn print-overlaps-result
-  "Print the overlap report."
+  "Prints the overlap report for cidrs to stdout."
   [cidrs overlaps]
   (println (format "\nChecking %d network(s) for overlaps...\n" (count cidrs)))
   (if (empty? overlaps)
@@ -193,7 +189,7 @@
       (println (format "\n  %d overlap(s) found.\n" (count overlaps))))))
 
 (defn print-lpm-result
-  "Print the longest-prefix-match results."
+  "Prints longest-prefix-match results for ips against routes to stdout."
   [routes ips]
   (let [fmt "  %-20s %-22s %s"]
     (println (format "\nRouting table: %d route(s)\n" (count routes)))

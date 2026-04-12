@@ -1,4 +1,4 @@
-.PHONY: run run-dist test build native clean container-build container-run
+.PHONY: run run-dist test spec build native clean container-build container-run
 
 JAR          := target/snetc-0.1.0.jar
 BINARY       := dist/snetc
@@ -21,6 +21,9 @@ exec: $(BINARY)
 
 test:
 	bin/kaocha
+
+spec:
+	bin/kaocha --focus snetc.spec-test
 
 build: $(JAR)
 

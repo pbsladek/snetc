@@ -1,77 +1,61 @@
 (ns snetc.core
   "CLI entry point for snetc. Thin dispatcher — all logic lives in sub-namespaces."
-  (:require [clojure.string :as str]
-            [snetc.ip      :as ip]
-            [snetc.subnet  :as subnet]
-            [snetc.ops     :as ops]
-            [snetc.display :as display])
+  (:require [clojure.string    :as str]
+            [clojure.tools.cli :refer [parse-opts]]
+            [snetc.ip          :as ip]
+            [snetc.subnet      :as subnet]
+            [snetc.ops         :as ops]
+            [snetc.display     :as display])
   (:gen-class))
 
-;;; ── Usage ────────────────────────────────────────────────────────────────────
+(def ^:private cli-options
+  [[nil  "--split PREFIX" "List all /PREFIX subnets within CIDR"
+    :parse-fn #(Integer/parseInt %)
+    :validate [#(<= 0 % 32) "Prefix must be 0–32"]]
+   [nil  "--tree PREFIX"  "Show subnet split tree down to /PREFIX"
+    :parse-fn #(Integer/parseInt %)
+    :validate [#(<= 0 % 32) "Prefix must be 0–32"]]
+   ["-h" "--help"         "Print this help and exit"]])
 
-(defn- usage []
+(defn- usage [summary]
   (str/join \newline
             ["snetc – IPv4 subnet calculator"
              ""
              "Usage:"
-             "  snetc <cidr>                              Show info for a subnet"
-             "  snetc <cidr> --split <prefix>             List all /<prefix> subnets within <cidr>"
-             "  snetc <cidr> --tree  <prefix>             Show split tree down to /<prefix>"
-             "  snetc aggregate <cidr> [<cidr> ...]       Aggregate CIDRs to minimal covering set"
-             "  snetc aggregate                           Read CIDRs from stdin (one per line)"
-             "  snetc contains <cidr> <ip> [<ip> ...]     Check which IPs fall within a subnet"
-             "  snetc free <parent> <alloc> [...]         Show unallocated space in a subnet"
-             "  snetc plan <parent> <hosts> [<hosts> ...] VLSM: allocate subnets by host count"
-             "  snetc overlaps <cidr> [<cidr> ...]        Detect overlapping/contained networks"
-             "  snetc lpm <cidr|ip> ...                   Longest-prefix match (CIDRs=routes, IPs=lookups)"
-             "  snetc diff <cidr> ... -- <cidr> ...       Diff two sets of CIDRs"
-             "  snetc classify <ip-or-cidr> ...           RFC classification of IPs/CIDRs"
-             "  snetc range <start-ip> <end-ip|+count>    Convert IP range to minimal CIDRs"
+             "  snetc <cidr> [options]"
+             "  snetc <subcommand> [args...]"
              ""
-             "Examples:"
-             "  snetc 192.168.0.0/22"
-             "  snetc 192.168.0.0/22 --split 24"
-             "  snetc 192.168.0.0/22 --tree 24"
-             "  snetc aggregate 10.0.0.0/24 10.0.1.0/24"
-             "  snetc contains 192.168.0.0/22 192.168.1.1 10.0.0.1"
-             "  snetc free 192.168.0.0/22 192.168.0.0/24 192.168.2.0/23"
-             "  snetc plan 192.168.0.0/22 500 200 50 10"
-             "  snetc overlaps 10.0.0.0/8 10.0.0.0/24 192.168.0.0/16"
-             "  snetc lpm 10.0.0.0/8 10.0.0.0/24 0.0.0.0/0 10.0.0.50 8.8.8.8"
-             "  snetc diff 10.0.0.0/24 10.0.1.0/24 -- 10.0.0.0/23 10.0.2.0/24"
-             "  snetc classify 10.0.0.1 192.168.1.1 8.8.8.8 127.0.0.1"
-             "  snetc range 10.0.0.5 10.0.1.200"
-             "  snetc range 10.0.0.0 +1000"]))
-
-;;; ── Error helpers ────────────────────────────────────────────────────────────
+             "Options:"
+             summary
+             ""
+             "Subcommands:"
+             "  aggregate <cidr> [...]      Aggregate CIDRs to minimal covering set"
+             "  aggregate                   Read CIDRs from stdin (one per line)"
+             "  contains <cidr> <ip> [...]  Check which IPs fall within a subnet"
+             "  free <parent> <alloc> [...]  Show unallocated space in a subnet"
+             "  plan <parent> <n> [...]      VLSM: allocate subnets by host count"
+             "  overlaps <cidr> [...]        Detect overlapping/contained networks"
+             "  lpm <cidr|ip> ...            Longest-prefix match"
+             "  diff <cidr> ... -- <cidr>    Diff two sets of CIDRs"
+             "  classify <ip-or-cidr> ...    RFC classification of IPs/CIDRs"
+             "  range <start> <end|+count>   Convert IP range to minimal CIDRs"]))
 
 (defn- die [msg]
   (binding [*out* *err*]
     (println msg))
   (System/exit 1))
 
-(defn- parse-prefix! [s]
-  (let [p (try (Integer/parseInt s)
-               (catch Exception _ (die "Prefix must be an integer")))]
-    (when-not (subnet/valid-prefix? p)
-      (die "Prefix must be 0–32"))
-    p))
+(defn- handle-info [cidr]
+  (display/print-subnet-info (subnet/subnet-info cidr)))
 
-;;; ── Subcommand handlers ──────────────────────────────────────────────────────
-
-(defn- handle-info [args]
-  (display/print-subnet-info (subnet/subnet-info (first args))))
-
-(defn- handle-split [[cidr _ prefix-str]]
-  (let [new-prefix (parse-prefix! prefix-str)
-        base       (:prefix (subnet/subnet-info cidr))]
+(defn- handle-split [cidr new-prefix]
+  (let [base (:prefix (subnet/subnet-info cidr))]
     (when (< new-prefix base)
       (die (str "Split prefix /" new-prefix " is smaller than base /" base)))
     (display/print-split-table (subnet/split-subnets cidr new-prefix))))
 
-(defn- handle-tree [[cidr _ prefix-str]]
-  (let [max-prefix (parse-prefix! prefix-str)
-        base       (:prefix (subnet/subnet-info cidr))]
+(defn- handle-tree [cidr max-prefix]
+  (let [base (:prefix (subnet/subnet-info cidr))]
     (when (< max-prefix base)
       (die (str "Max prefix /" max-prefix " is smaller than base /" base)))
     (display/print-subnet-tree (subnet/subnet-tree cidr max-prefix))))
@@ -140,8 +124,6 @@
     (display/print-range-result start-ip (ip/long->ip end-n)
                                 (subnet/range->cidrs start-n end-n))))
 
-;;; ── Dispatch table ───────────────────────────────────────────────────────────
-
 (def ^:private subcommands
   {"aggregate" handle-aggregate
    "contains"  handle-contains
@@ -153,27 +135,31 @@
    "classify"  handle-classify
    "range"     handle-range})
 
-;;; ── Entry point ──────────────────────────────────────────────────────────────
-
 (defn -main [& args]
-  (cond
-    (or (empty? args) (= "--help" (first args)))
-    (do (println (usage)) (System/exit 0))
+  (let [{:keys [options arguments errors summary]} (parse-opts args cli-options :in-order true)
+        [cmd & rest-args] arguments]
+    (cond
+      errors
+      (do (doseq [e errors] (binding [*out* *err*] (println e)))
+          (System/exit 1))
 
-    (= 1 (count args))
-    (try (handle-info args)
-         (catch Exception e (die (ex-message e))))
+      (or (:help options) (empty? args))
+      (do (println (usage summary)) (System/exit 0))
 
-    (= "--split" (second args))
-    (try (handle-split args)
-         (catch Exception e (die (ex-message e))))
-
-    (= "--tree" (second args))
-    (try (handle-tree args)
-         (catch Exception e (die (ex-message e))))
-
-    :else
-    (if-let [handler (subcommands (first args))]
-      (try (handler (rest args))
+      (:split options)
+      (try (handle-split cmd (:split options))
            (catch Exception e (die (ex-message e))))
-      (do (println (usage)) (System/exit 1)))))
+
+      (:tree options)
+      (try (handle-tree cmd (:tree options))
+           (catch Exception e (die (ex-message e))))
+
+      (and (nil? (subcommands cmd)) (str/includes? (str cmd) "/"))
+      (try (handle-info cmd)
+           (catch Exception e (die (ex-message e))))
+
+      :else
+      (if-let [handler (subcommands cmd)]
+        (try (handler rest-args)
+             (catch Exception e (die (ex-message e))))
+        (do (println (usage summary)) (System/exit 1))))))
