@@ -1,12 +1,14 @@
 ---
 layout: default
+title: Home
+nav_order: 1
 ---
 
 # snetc
 
 IPv4 subnet calculator for the command line. Computes subnet info, splits, trees, aggregation, VLSM, overlaps, diffs, LPM routing, RFC classification, and more — as a fast native binary with no runtime required.
 
-[View on GitHub](https://github.com/pbsladek/snetc){: .btn} [Latest release](https://github.com/pbsladek/snetc/releases/latest){: .btn}
+**[View on GitHub](https://github.com/pbsladek/snetc)** · **[Latest release](https://github.com/pbsladek/snetc/releases/latest)**
 
 ---
 
@@ -18,7 +20,7 @@ Download from the [latest release](https://github.com/pbsladek/snetc/releases/la
 
 | Platform | File |
 |---|---|
-| Linux x86\_64 | `snetc-linux-amd64` |
+| Linux x86_64 | `snetc-linux-amd64` |
 | macOS Apple Silicon | `snetc-macos-aarch64` |
 
 Verify and install:
@@ -91,14 +93,14 @@ $ snetc util 10.0.0.0/16 10.0.0.0/18 10.0.128.0/19 10.0.160.0/20
 
 10.0.0.0/16  [65536 addresses]
 
-  ██████████████████░░░░░░░░░░░░░░░░░░██████��███████░░░░░░░░░░░░░░░░░░░░░░░░░░
+  [################......................##########..............................]
 
   Allocated   10.0.0.0/18          255.255.192.0      16382 hosts
   Allocated   10.0.128.0/19        255.255.224.0      8190 hosts
   Allocated   10.0.160.0/20        255.255.240.0      4094 hosts
   Free        10.0.64.0/18         255.255.192.0      16382 hosts
   Free        10.0.176.0/20        255.255.240.0      4094 hosts
-  Free        10.0.192.0/18        255.255.192.0      16382 hosts  ← largest
+  Free        10.0.192.0/18        255.255.192.0      16382 hosts  <- largest
 
   Used: 28672 / 65536  (44%)  |  Free: 36864 in 3 blocks  |  Fragmentation: low
 ```
@@ -108,17 +110,17 @@ $ snetc util 10.0.0.0/16 10.0.0.0/18 10.0.128.0/19 10.0.160.0/20
 ```
 $ ip route show | snetc analyze
 
-10 routes parsed  →  2 after aggregation  (saves 8)
+10 routes parsed  ->  2 after aggregation  (saves 8)
 
   Containment (6):
-    10.0.1.0/24          ⊂  10.0.0.0/8
-    10.0.2.0/24          ⊂  10.0.0.0/8
+    10.0.1.0/24          c  10.0.0.0/8
+    10.0.2.0/24          c  10.0.0.0/8
     ...
 
   Summarization opportunities (1):
 
-    10.1.0.0/24          ┌
-    10.1.1.0/24          └  →  10.1.0.0/23  (2 → 1)
+    10.1.0.0/24          +--
+    10.1.1.0/24          +->  10.1.0.0/23  (2 -> 1)
 ```
 
 ### VLSM planning
@@ -149,7 +151,7 @@ Aggregated 2 network(s) into 1:
 ```
 $ snetc diff 10.0.0.0/24 10.0.1.0/24 -- 10.0.0.0/24 10.0.2.0/24
 
-Diff: 2 → 2 network(s)
+Diff: 2 -> 2 network(s)
 
   [=] 10.0.0.0/24
   [-] 10.0.1.0/24
@@ -163,34 +165,40 @@ Diff: 2 → 2 network(s)
 ```
 $ snetc classify 10.0.0.1 8.8.8.8 127.0.0.1
 
-  Input                  Category                         RFC          Routable
---------------------------------------------------------------------------------
-  10.0.0.1               Private                          RFC 1918     no
-  8.8.8.8                Public                           -            yes
-  127.0.0.1              Loopback                         RFC 1122     no
+  Input                  Category          RFC          Routable
+----------------------------------------------------------------
+  10.0.0.1               Private           RFC 1918     no
+  8.8.8.8                Public            -            yes
+  127.0.0.1              Loopback          RFC 1122     no
 ```
 
 ### Interactive subnet planner
 
-```
-$ snetc tree 10.0.0.0/16
-```
-
-Opens a full-screen keyboard-driven planner. Split and join subnets, assign labels, undo/redo, then export to EDN, JSON, or YAML.
+`snetc tree 10.0.0.0/16` opens a full-screen keyboard-driven planner. Split and join subnets, assign labels, undo/redo, then export to EDN, JSON, or YAML.
 
 ```
 snetc tree: 10.0.0.0/16  (3 leaf subnets)
 
-    #  Subnet              Mask               Range                             Hosts  Act  Lbl
-----------------------------------------------------------------------------------------------
-      1  10.0.0.0/17         255.255.128.0      10.0.0.0..10.0.127.255            32766  s    Web tier
-      2  10.0.128.0/18       255.255.192.0      10.0.128.0..10.0.191.255          16382  s/j  App tier
->     3  10.0.192.0/18       255.255.192.0      10.0.192.0..10.0.255.255          16382  s/j  DB tier
+    #  Subnet              Mask               Range                          Hosts  Act  Lbl
+--------------------------------------------------------------------------------------------
+      1  10.0.0.0/17         255.255.128.0      10.0.0.0..10.0.127.255         32766  s    Web tier
+      2  10.0.128.0/18       255.255.192.0      10.0.128.0..10.0.191.255       16382  s/j  App tier
+>     3  10.0.192.0/18       255.255.192.0      10.0.192.0..10.0.255.255       16382  s/j  DB tier
 
-up/down · s split · J join · l label · u undo · r redo · e export · p print · q quit
+up/down  s split  J join  l label  u undo  r redo  e export  p print  q quit
 ```
 
-**Keys:** `↑`/`k` up · `↓`/`j` down · `s`/Enter split · `J`/Backspace join · `l` label · `/` jump · `u` undo · `r` redo · `e` export (edn/json/yaml) · `p` write leaf CIDRs · `q` quit
+| Key | Action |
+|---|---|
+| Arrow keys or `j`/`k` | Move selection |
+| `s` / Enter | Split subnet |
+| `J` / Backspace | Join with sibling |
+| `l` | Label subnet |
+| `/` | Jump to CIDR |
+| `u` / `r` | Undo / redo |
+| `e` | Export (prompts: edn / json / yaml) |
+| `p` | Write leaf CIDRs to file |
+| `q` | Quit |
 
 ---
 

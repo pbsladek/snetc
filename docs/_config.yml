@@ -1,7 +1,10 @@
-theme: jekyll-theme-cayman
+remote_theme: just-the-docs/just-the-docs@v0.10.0
+
 title: snetc
 description: IPv4 subnet calculator for the command line
-show_downloads: false
 
-exclude:
-  - interactive-tree-plan.md
+color_scheme: dark
+
+plugins:
+  - jekyll-remote-theme
+
