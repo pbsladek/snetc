@@ -1,0 +1,7 @@
+theme: jekyll-theme-cayman
+title: snetc
+description: IPv4 subnet calculator for the command line
+show_downloads: false
+
+exclude:
+  - interactive-tree-plan.md

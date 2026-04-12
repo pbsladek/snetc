@@ -191,6 +191,59 @@
                            :partial      "partial overlap"))))
       (println (format "\n  %d overlap(s) found.\n" (count overlaps))))))
 
+(defn print-util-result
+  "Prints the utilization map and stats for the pre-computed result map."
+  [{:keys [parent-info alloc-infos free-infos largest-free
+           total-addrs used-addrs free-addrs pct-used fragmentation bar]}]
+  (println (format "\n%s  [%d addresses]\n" (:cidr parent-info) total-addrs))
+  (println (str "  " bar "\n"))
+  (let [largest-cidr (:cidr largest-free)
+        fmt          "  %-11s %-20s %-18s %d hosts%s"]
+    (doseq [info alloc-infos]
+      (println (format fmt "Allocated" (:cidr info) (:mask info) (:hosts info) "")))
+    (doseq [info free-infos]
+      (println (format fmt "Free" (:cidr info) (:mask info) (:hosts info)
+                       (if (= (:cidr info) largest-cidr) "  \u2190 largest" "")))))
+  (println)
+  (println (format "  Used: %d / %d  (%d%%)  |  Free: %d in %d block%s%s\n"
+                   used-addrs total-addrs pct-used
+                   free-addrs (count free-infos)
+                   (if (= 1 (count free-infos)) "" "s")
+                   (if fragmentation (str "  |  Fragmentation: " fragmentation) ""))))
+
+(defn print-analyze-result
+  "Prints route table analysis for the pre-computed result map."
+  [{:keys [route-count aggregated-count savings groups contained]}]
+  (if (zero? savings)
+    (println (format "\n%d route%s parsed  (fully optimized, no issues found)\n"
+                     route-count (if (= 1 route-count) "" "s")))
+    (println (format "\n%d route%s parsed  \u2192  %d after aggregation  (saves %d)\n"
+                     route-count (if (= 1 route-count) "" "s")
+                     aggregated-count savings)))
+  (if (empty? contained)
+    (println "  No containment relationships found.")
+    (do
+      (println (format "  Containment (%d):" (count contained)))
+      (doseq [{:keys [a b type]} contained]
+        (let [[inner outer] (if (= type :a-contains-b) [b a] [a b])]
+          (println (format "    %-20s \u2282  %s" inner outer))))))
+  (println)
+  (if (empty? groups)
+    (println "  No summarization opportunities found.")
+    (do
+      (println (format "  Summarization opportunities (%d):" (count groups)))
+      (doseq [{:keys [summary routes]} groups]
+        (println)
+        (let [n (count routes)]
+          (doseq [[idx r] (map-indexed vector routes)]
+            (let [bracket (cond (= idx 0)       "\u250c"
+                                (= idx (dec n)) "\u2518"
+                                :else           "\u2502")
+                  suffix  (when (= idx (dec n))
+                            (format "  \u2192  %s  (%d \u2192 1)" summary n))]
+              (println (format "    %-20s %s%s" r bracket (or suffix "")))))))))
+  (println))
+
 (defn print-lpm-result
   "Prints longest-prefix-match results to stdout.
   results is a seq of {:ip :match :prefix-str} maps pre-computed in the handler."

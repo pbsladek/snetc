@@ -236,7 +236,86 @@ Range: 10.0.1.5 – 10.0.1.54  (50 addresses)
 $ snetc tree 10.0.0.0/16
 ```
 
-Opens a keyboard-driven terminal planner for manually splitting and joining subnets. Use arrow keys or `j`/`k` to select a visible subnet, `s` or Enter to split it, `J` or Backspace to join sibling leaves, `l` to label a subnet, `u`/`r` for undo/redo, `e` to export the plan (prompts for `edn`, `json`, or `yaml`), `p` to write leaf CIDRs to `snetc-leaves.txt`, and `q` to quit. The existing static tree remains available as `snetc <cidr> --tree <prefix>`.
+Opens a keyboard-driven terminal planner for manually carving a CIDR block into labelled subnets.
+
+```
+snetc tree: 10.0.0.0/16  (1 leaf subnet)
+
+    #  Subnet              Mask               Range                             Hosts  Act  Lbl
+----------------------------------------------------------------------------------------------
+>     1  10.0.0.0/16         255.255.0.0        10.0.0.0..10.0.255.255            65534  s
+
+up/down or k/j select  s/enter split  J/backspace join  l label  u undo  r redo  e export  p print  q quit
+Ready
+```
+
+Split the root once, then split the lower half, label the pieces, and the table updates in place:
+
+```
+snetc tree: 10.0.0.0/16  (3 leaf subnets)
+
+    #  Subnet              Mask               Range                             Hosts  Act  Lbl
+----------------------------------------------------------------------------------------------
+      1  10.0.0.0/17         255.255.128.0      10.0.0.0..10.0.127.255            32766  s    Web tier
+      2  10.0.128.0/18       255.255.192.0      10.0.128.0..10.0.191.255          16382  s/j  App tier
+>     3  10.0.192.0/18       255.255.192.0      10.0.192.0..10.0.255.255          16382  s/j  DB tier
+
+up/down or k/j select  s/enter split  J/backspace join  l label  u undo  r redo  e export  p print  q quit
+Labeled 10.0.192.0/18
+```
+
+The `Act` column shows what operations are available on the selected row: `s` (can split), `j` (can join with sibling), `s/j` (both), `-` (neither — /32 host route).
+
+#### Key bindings
+
+| Key | Action |
+|---|---|
+| `↑` / `k` | Move selection up |
+| `↓` / `j` | Move selection down |
+| `s` / `Enter` / `Space` | Split selected subnet into two equal halves |
+| `J` / `Backspace` | Join selected subnet with its sibling back into their parent |
+| `l` | Label selected subnet (blank input clears the label) |
+| `/` | Jump to a CIDR by address |
+| `u` | Undo |
+| `r` | Redo |
+| `e` | Export plan — prompts for format: `edn` / `json` / `yaml` |
+| `p` | Write leaf CIDRs (one per line) to `snetc-leaves.txt` |
+| `q` / `Ctrl-C` | Quit |
+
+#### Export formats
+
+Pressing `e` prompts `Export [e]dn/[j]son/[y]aml (enter=edn):` and writes one of:
+
+- **`snetc-plan.edn`** — full plan tree including labels; can be re-imported (round-trips via `import-plan`)
+- **`snetc-plan.json`** — same structure as EDN, JSON-encoded
+- **`snetc-plan.yaml`** — same structure, YAML-encoded
+
+Example JSON output for the three-subnet plan above:
+
+```json
+{"version":1,"parent":"10.0.0.0/16","root":{"cidr":"10.0.0.0/16","label":null,"children":[{"cidr":"10.0.0.0/17","label":"Web tier","children":null},{"cidr":"10.0.128.0/17","label":null,"children":[{"cidr":"10.0.128.0/18","label":"App tier","children":null},{"cidr":"10.0.192.0/18","label":"DB tier","children":null}]}]}}
+```
+
+Pressing `p` instead writes a flat list of leaf CIDRs suitable for piping into other `snetc` commands:
+
+```
+10.0.0.0/17
+10.0.128.0/18
+10.0.192.0/18
+```
+
+#### Display modes
+
+The table adapts to terminal width, dropping columns as space shrinks:
+
+| Width | Columns shown |
+|---|---|
+| Wide | Subnet, Mask, Range, Usable IPs, Hosts, Act, Lbl |
+| Standard | Subnet, Mask, Range, Hosts, Act, Lbl |
+| Compact | Subnet, Range, Hosts, Act, Lbl |
+| Narrow | Subnet, Hosts, Act, Lbl |
+
+The existing non-interactive tree remains available as `snetc <cidr> --tree <prefix>`.
 
 ## Development
 

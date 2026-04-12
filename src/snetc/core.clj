@@ -41,7 +41,9 @@
              "  diff <cidr> ... -- <cidr>    Diff two sets of CIDRs"
              "  classify <ip-or-cidr> ...    RFC classification of IPs/CIDRs"
              "  range <start> <end|+count>   Convert IP range to minimal CIDRs"
-             "  tree <cidr>                  Interactive split/join subnet planner"]))
+             "  tree <cidr>                  Interactive split/join subnet planner"
+             "  util <parent> <alloc> [...]  Visualise address space utilisation"
+             "  analyze [<file>]             Analyse route table (or stdin)"]))
 
 (defn- die [msg]
   (binding [*out* *err*]
@@ -179,6 +181,28 @@
         (when-not (subnet/valid-ip? end-arg) (die (str "Invalid IP: " end-arg)))
         (emit-range-result! start-ip start-n (ip/ip->long end-arg))))))
 
+(defn- handle-util [[parent & allocs]]
+  (when-not parent (die "util requires a parent CIDR and at least one allocated CIDR"))
+  (when (empty? allocs) (die "util requires at least one allocated CIDR"))
+  (try (subnet/parse-cidr parent) (catch Exception e (die (ex-message e))))
+  (doseq [a allocs]
+    (try (subnet/parse-cidr a) (catch Exception e (die (ex-message e)))))
+  (display/print-util-result (ops/utilization-info parent allocs)))
+
+(defn- handle-analyze [args]
+  (let [text (cond
+               (empty? args)
+               (slurp *in*)
+               (= 1 (count args))
+               (try (slurp (first args))
+                    (catch Exception e (die (ex-message e))))
+               :else
+               (die "Usage: snetc analyze [<file>]"))]
+    (let [routes (ops/parse-routes text)]
+      (when (empty? routes)
+        (die "No valid CIDR routes found in input"))
+      (display/print-analyze-result (ops/analyze-routes routes)))))
+
 (defn- handle-interactive-tree [[parent & extra]]
   (when (nil? parent) (die "tree requires a parent CIDR"))
   (when (seq extra) (die "tree accepts exactly one parent CIDR"))
@@ -194,7 +218,9 @@
    "diff"      handle-diff
    "classify"  handle-classify
    "range"     handle-range
-   "tree"      handle-interactive-tree})
+   "tree"      handle-interactive-tree
+   "util"      handle-util
+   "analyze"   handle-analyze})
 
 (defn -main [& args]
   (let [argv     (vec args)

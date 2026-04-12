@@ -1,7 +1,8 @@
 (ns snetc.ops
   "Set operations on CIDR collections: aggregation, diff, overlaps, VLSM, LPM."
-  (:require [snetc.ip     :as ip]
-            [snetc.subnet :as subnet]))
+  (:require [clojure.string :as str]
+            [snetc.ip       :as ip]
+            [snetc.subnet   :as subnet]))
 
 (defn- merge-ranges
   "Returns the minimal non-overlapping set of ranges from a sorted seq."
@@ -137,6 +138,101 @@
       (< p 0)                (throw (ex-info (str "No prefix can fit " n " hosts") {:n n}))
       (>= (ip/usable-hosts p) n) p
       :else                  (recur (dec p)))))
+
+(defn- fragmentation-score [free-count]
+  (cond
+    (zero? free-count) nil
+    (= 1 free-count)   "none"
+    (<= free-count 3)  "low"
+    (<= free-count 6)  "moderate"
+    :else              "high"))
+
+(def ^:private bar-width 72)
+
+(defn- util-bar
+  "Returns a bar-width string of █ (allocated) and ░ (free) characters."
+  [allocated-cidrs parent-cidr]
+  (let [[pstart pend] (subnet/cidr->range parent-cidr)
+        total   (inc (- pend pstart))
+        aranges (mapv subnet/cidr->range allocated-cidrs)]
+    (apply str
+           (for [i (range bar-width)]
+             (let [addr (+ pstart (long (/ (* (long i) total) bar-width)))]
+               (if (some (fn [[s e]] (<= s addr e)) aranges) \█ \░))))))
+
+(defn utilization-info
+  "Returns utilization statistics for parent-cidr given a set of allocated-cidrs."
+  [parent-cidr allocated-cidrs]
+  (let [parent-info  (subnet/subnet-info parent-cidr)
+        [pstart pend] (subnet/cidr->range parent-cidr)
+        total-addrs  (inc (- pend pstart))
+        free-cidrs   (vec (free-space parent-cidr allocated-cidrs))
+        free-addrs   (reduce + 0 (map (fn [c]
+                                        (let [[s e] (subnet/cidr->range c)]
+                                          (inc (- e s))))
+                                      free-cidrs))
+        used-addrs   (- total-addrs free-addrs)
+        alloc-infos  (mapv subnet/subnet-info allocated-cidrs)
+        free-infos   (mapv subnet/subnet-info free-cidrs)
+        largest-free (when (seq free-infos) (apply max-key :hosts free-infos))
+        pct-used     (if (pos? total-addrs)
+                       (long (Math/round (double (* 100 (/ used-addrs total-addrs)))))
+                       0)]
+    {:parent-info   parent-info
+     :alloc-infos   alloc-infos
+     :free-infos    free-infos
+     :largest-free  largest-free
+     :total-addrs   total-addrs
+     :used-addrs    used-addrs
+     :free-addrs    free-addrs
+     :pct-used      pct-used
+     :fragmentation (fragmentation-score (count free-infos))
+     :bar           (util-bar allocated-cidrs parent-cidr)}))
+
+(def ^:private cidr-pat #"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}")
+
+(defn parse-routes
+  "Extracts destination CIDRs from route table text.
+  Accepts ip-route show output, Cisco IOS show ip route, or plain CIDR lists.
+  Returns a distinct vec of normalised CIDR strings."
+  [text]
+  (->> (str/split-lines text)
+       (map str/trim)
+       (remove #(or (str/blank? %) (str/starts-with? % "#")))
+       (keep (fn [line]
+               (when-let [m (re-find cidr-pat line)]
+                 (try (:cidr (subnet/subnet-info m)) (catch Exception _ nil)))))
+       distinct
+       vec))
+
+(defn- routes-within
+  "Returns the subset of routes whose address range falls entirely within cidr."
+  [routes cidr]
+  (let [[as ae] (subnet/cidr->range cidr)]
+    (filterv (fn [r]
+               (let [[rs re] (subnet/cidr->range r)]
+                 (and (>= rs as) (<= re ae))))
+             routes)))
+
+(defn analyze-routes
+  "Returns analysis of a CIDR route table: containments, summarization groups, stats."
+  [routes]
+  (let [aggregated  (aggregate routes)
+        groups      (->> aggregated
+                         (map (fn [agg]
+                                {:summary agg
+                                 :routes  (routes-within routes agg)}))
+                         (filter #(> (count (:routes %)) 1))
+                         vec)
+        contained   (filterv #(#{:a-contains-b :b-contains-a} (:type %))
+                              (find-overlaps routes))]
+    {:routes           routes
+     :route-count      (count routes)
+     :aggregated       aggregated
+     :aggregated-count (count aggregated)
+     :savings          (- (count routes) (count aggregated))
+     :groups           groups
+     :contained        contained}))
 
 (defn plan-vlsm
   "Returns a vector of {:info :requested} VLSM allocations for host-counts within parent-cidr.
