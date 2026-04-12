@@ -11,6 +11,7 @@ Download the binary for your platform from the [latest release](https://github.c
 | Platform | File |
 |---|---|
 | Linux x86\_64 | `snetc-linux-amd64` |
+| Linux ARM64 | `snetc-linux-arm64` |
 | macOS Apple Silicon | `snetc-macos-aarch64` |
 
 Verify the checksum, then install:

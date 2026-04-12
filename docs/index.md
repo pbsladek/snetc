@@ -21,6 +21,7 @@ Download from the [latest release](https://github.com/pbsladek/snetc/releases/la
 | Platform | File |
 |---|---|
 | Linux x86_64 | `snetc-linux-amd64` |
+| Linux ARM64 | `snetc-linux-arm64` |
 | macOS Apple Silicon | `snetc-macos-aarch64` |
 
 Verify and install:
