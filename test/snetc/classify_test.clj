@@ -136,5 +136,15 @@
       (is (= "Private" (:name r)))
       (is (= "Public"  (:bcast-name r)))))
 
+  (testing ":spans? detects special ranges embedded between public endpoints"
+    ;; 172.0.0.0/7 starts and ends in public space but contains 172.16.0.0/12.
+    (let [r (classify "172.0.0.0/7")]
+      (is (true? (:spans? r)))
+      (is (= "Public" (:name r)))
+      (is (false? (:routable? r)))
+      (is (= "Private → Public" (:bcast-name r)))
+      (is (= ["Public" "Private" "Public"]
+             (map :name (:category-path r))))))
+
   (testing ":bcast-name is absent when :spans? is false"
     (is (not (contains? (classify "10.0.0.0/8") :bcast-name)))))

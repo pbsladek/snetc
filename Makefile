@@ -6,6 +6,7 @@ GRAALVM_HOME ?= /Library/Java/JavaVirtualMachines/graalvm-25.jdk/Contents/Home
 NATIVE_IMAGE ?= $(GRAALVM_HOME)/bin/native-image
 IMAGE        ?= snetc
 CTR          ?= $(shell command -v podman 2>/dev/null || echo docker)
+BUILD_INPUTS := deps.edn build.clj $(shell find src -type f)
 
 run:
 	clojure -M -m snetc.core $(ARGS)
@@ -25,9 +26,10 @@ test:
 spec:
 	bin/kaocha --focus snetc.spec-test
 
-build: $(JAR)
+build:
+	clojure -T:build uber
 
-$(JAR):
+$(JAR): $(BUILD_INPUTS)
 	clojure -T:build uber
 
 native: $(BINARY)

@@ -108,10 +108,37 @@
       (for [i (range n)]
         (subnet-info (str (ip/long->ip (+ net (* i size))) "/" new-prefix))))))
 
+(def ^:private max-tree-leaves 65536)
+
+(defn- tree-leaf-count [prefix max-prefix]
+  (.shiftLeft (biginteger 1) (- max-prefix prefix)))
+
+(defn- guard-tree-size! [cidr prefix max-prefix]
+  (when-not (valid-prefix? max-prefix)
+    (throw (ex-info (str "Max prefix must be 0–32, got: " max-prefix)
+                    {:cidr cidr :max-prefix max-prefix})))
+  (when (< max-prefix prefix)
+    (throw (ex-info (str "Max prefix /" max-prefix
+                         " must be ≥ base prefix /" prefix)
+                    {:cidr cidr :max-prefix max-prefix})))
+  (let [leaves (tree-leaf-count prefix max-prefix)
+        nodes  (dec (* 2N leaves))]
+    (when (> leaves max-tree-leaves)
+      (throw (ex-info (str "Subnet tree would produce " leaves
+                           " leaf subnet(s) and " nodes
+                           " total node(s); limit is " max-tree-leaves
+                           " leaf subnet(s).")
+                      {:cidr cidr
+                       :max-prefix max-prefix
+                       :leaves leaves
+                       :nodes nodes
+                       :limit max-tree-leaves})))))
+
 (defn subnet-tree
   "Returns a tree splitting cidr down to max-prefix. Each node is {:info :children}."
   [cidr max-prefix]
   (let [info (subnet-info cidr)]
+    (guard-tree-size! cidr (:prefix info) max-prefix)
     {:info     info
      :children (when (< (:prefix info) max-prefix)
                  (mapv #(subnet-tree (:cidr %) max-prefix)

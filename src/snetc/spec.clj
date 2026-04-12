@@ -82,10 +82,14 @@
 (s/def ::routable?  boolean?)
 (s/def ::spans?     boolean?)
 (s/def ::bcast-name string?)
+(s/def ::category-path
+  (s/coll-of (s/keys :req-un [::name ::rfc])
+             :kind vector?
+             :min-count 1))
 
 (s/def ::classify-result
   (s/keys :req-un [::input ::name ::rfc ::routable? ::spans?]
-          :opt-un [::bcast-name]))
+          :opt-un [::bcast-name ::category-path]))
 
 ;; Keys for overlap results.
 (s/def ::a    ::cidr-str)

@@ -38,24 +38,57 @@
             special-ranges)
       {:name "Public" :rfc ""}))
 
+(defn- overlapping? [start end range-start range-end]
+  (and (<= range-start end) (>= range-end start)))
+
+(defn- category-boundaries
+  "Returns sorted segment boundaries where classification can change in [start,end]."
+  [start end]
+  (let [end-excl (inc end)]
+    (->> special-ranges
+         (filter (fn [{range-start :start range-end :end}]
+                   (overlapping? start end range-start range-end)))
+         (mapcat (fn [{range-start :start range-end :end}]
+                   [(max start range-start)
+                    (min end-excl (inc range-end))]))
+         (concat [start end-excl])
+         distinct
+         sort
+         vec)))
+
+(defn- collapse-adjacent [matches]
+  (reduce (fn [acc match]
+            (if (= match (peek acc))
+              acc
+              (conj acc match)))
+          []
+          matches))
+
+(defn- category-path
+  "Returns the ordered classification path for every segment in [start,end]."
+  [start end]
+  (->> (category-boundaries start end)
+       (partition 2 1)
+       (map (fn [[segment-start _]] (match-for segment-start)))
+       collapse-adjacent))
+
 (defn classify
   "Returns {:input :name :rfc :routable? :spans?} for ip-or-cidr string.
-  CIDRs are classified by network address. :spans? is true when the broadcast
-  address falls in a different category; :bcast-name is added in that case."
+  :name/:rfc describe the network address. CIDRs also include :category-path;
+  :spans? is true when any segment in the CIDR falls in a different category."
   [input]
   (let [is-cidr? (str/includes? input "/")
         {:keys [ip-str prefix]} (subnet/parse-cidr (if is-cidr? input (str input "/32")))
         net      (ip/network-addr (ip/ip->long ip-str) prefix)
         bcast    (ip/broadcast-addr net prefix)
-        net-m    (match-for net)
-        bcast-m  (match-for bcast)
-        ;; For plain IPs (treated as /32), net == bcast so spans? is naturally
-        ;; false — no need to special-case is-cidr? here.
-        spans?   (not= net-m bcast-m)]
-    ;; :routable? reflects the address class, not per-prefix forwarding policy.
-    ;; Directed broadcasts within public space (e.g. 1.2.3.255/24) are marked
-    ;; routable because the address belongs to public space; RFC 2644 deprecates
-    ;; forwarding them but that is a router policy, not an address classification.
-    (merge {:input input :routable? (= "Public" (:name net-m)) :spans? spans?}
+        path     (category-path net bcast)
+        net-m    (first path)
+        spans?   (> (count path) 1)]
+    ;; :routable? reflects address classification, not per-prefix forwarding
+    ;; policy. A CIDR is routable only when every segment is public.
+    (merge {:input input
+            :routable? (every? #(= "Public" (:name %)) path)
+            :spans? spans?
+            :category-path path}
            net-m
-           (when spans? {:bcast-name (:name bcast-m)}))))
+           (when spans? {:bcast-name (str/join " → " (map :name (rest path)))}))))

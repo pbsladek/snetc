@@ -30,6 +30,7 @@ snetc lpm <cidr|ip> ...                   Longest-prefix match (CIDRs=routes, IP
 snetc diff <cidr> ... -- <cidr> ...       Diff two sets of CIDRs
 snetc classify <ip-or-cidr> ...           RFC classification of IPs/CIDRs
 snetc range <start-ip> <end-ip|+count>    Convert IP range to minimal CIDRs
+snetc tree <cidr>                         Interactive split/join subnet planner
 ```
 
 ## Examples
@@ -202,6 +203,14 @@ Range: 10.0.1.5 – 10.0.1.54  (50 addresses)
 
   8 CIDR block(s)
 ```
+
+### Interactive subnet planning
+
+```
+$ snetc tree 10.0.0.0/16
+```
+
+Opens a keyboard-driven terminal planner for manually splitting and joining subnets. Use arrow keys or `j`/`k` to select a visible subnet, `s` or Enter to split it, `J` or Backspace to join sibling leaves, `l` to label a subnet, `u`/`r` for undo/redo, `e` to export the plan to `snetc-plan.edn`, `p` to write leaf CIDRs to `snetc-leaves.txt`, and `q` to quit. The existing static tree remains available as `snetc <cidr> --tree <prefix>`.
 
 ## Development
 

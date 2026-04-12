@@ -12,14 +12,17 @@
 | `src/snetc/subnet.clj` | CIDR parsing, `subnet-info`, range conversion |
 | `src/snetc/ops.clj` | Set operations (aggregate, diff, VLSM, overlaps, LPM) |
 | `src/snetc/classify.clj` | RFC classification, `special-ranges` table |
+| `src/snetc/plan.clj` | Pure model for interactive split/join subnet planning |
 | `src/snetc/core.clj` | CLI entry point, all handler functions |
 | `src/snetc/display.clj` | Terminal output only — no domain logic |
+| `src/snetc/tui_render.clj` | Pure table rendering helpers for the interactive planner |
+| `src/snetc/tui.clj` | Raw terminal event loop for `snetc tree <cidr>` |
 | `src/snetc/spec.clj` | Full spec coverage with generators |
 
 ## How to verify your work
 
 ```sh
-bin/kaocha                                  # all unit tests (35 tests, ~368 assertions)
+bin/kaocha                                  # all unit tests (52 tests, ~439 assertions)
 bin/kaocha --focus snetc.spec-test          # generative spec tests (6 tests, 75 trials each)
 ```
 

@@ -2,7 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [snetc.ip     :refer [ip->long]]
             [snetc.subnet :refer [valid-ip? valid-prefix? parse-cidr subnet-info
-                                  split-subnets cidr->range range->cidrs ip-in-cidr?]]))
+                                  split-subnets subnet-tree cidr->range
+                                  range->cidrs ip-in-cidr?]]))
 
 ;;; ── valid-ip? ────────────────────────────────────────────────────────────────
 
@@ -129,6 +130,22 @@
       (doseq [[s e] (map #(cidr->range (:cidr %)) subs)]
         (is (>= s pstart))
         (is (<= e pend))))))
+
+;;; ── subnet-tree ─────────────────────────────────────────────────────────────
+
+(deftest subnet-tree-test
+  (testing "small trees are built normally"
+    (let [tree (subnet-tree "192.168.0.0/24" 26)]
+      (is (= "192.168.0.0/24" (:cidr (:info tree))))
+      (is (= 2 (count (:children tree))))
+      (is (= [25 25]
+             (mapv #(:prefix (:info %)) (:children tree))))))
+
+  (testing "oversized trees are rejected before recursive expansion"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"Subnet tree would produce"
+          (subnet-tree "0.0.0.0/0" 32)))))
 
 ;;; ── cidr->range ──────────────────────────────────────────────────────────────
 

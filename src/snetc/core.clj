@@ -6,7 +6,8 @@
             [snetc.subnet      :as subnet]
             [snetc.ops         :as ops]
             [snetc.classify    :as classify]
-            [snetc.display     :as display])
+            [snetc.display     :as display]
+            [snetc.tui         :as tui])
   (:gen-class))
 
 (def ^:private cli-options
@@ -39,12 +40,22 @@
              "  lpm <cidr|ip> ...            Longest-prefix match"
              "  diff <cidr> ... -- <cidr>    Diff two sets of CIDRs"
              "  classify <ip-or-cidr> ...    RFC classification of IPs/CIDRs"
-             "  range <start> <end|+count>   Convert IP range to minimal CIDRs"]))
+             "  range <start> <end|+count>   Convert IP range to minimal CIDRs"
+             "  tree <cidr>                  Interactive split/join subnet planner"]))
 
 (defn- die [msg]
   (binding [*out* *err*]
     (println msg))
   (System/exit 1))
+
+(defn- parse-long-or-nil [s]
+  (try
+    (Long/parseLong s)
+    (catch Exception _ nil)))
+
+(defn- index-of [xs needle]
+  (or (first (keep-indexed (fn [idx x] (when (= needle x) idx)) xs))
+      -1))
 
 (defn- handle-info [cidr]
   (display/print-subnet-info (subnet/subnet-info cidr)))
@@ -70,20 +81,25 @@
                      (map str/trim)
                      (remove str/blank?)
                      vec))]
+    (when (empty? cidrs)
+      (die "aggregate requires at least one CIDR (or CIDRs on stdin)"))
     (display/print-aggregate-result cidrs (ops/aggregate cidrs))))
 
 (defn- handle-contains [[cidr & ips]]
   (when (nil? cidr) (die "contains requires a CIDR and at least one IP"))
   (when (empty? ips) (die "contains requires at least one IP address"))
-  (let [info (try (subnet/subnet-info cidr)
-                  (catch Exception e (die (ex-message e))))]
+  (let [parsed (try {:info (subnet/subnet-info cidr)}
+                    (catch Exception e {:error (ex-message e)}))]
+    (when-let [msg (:error parsed)]
+      (die msg))
     (doseq [ip ips]
       (when-not (subnet/valid-ip? ip)
         (die (str "Invalid IP address: " ip))))
-    (display/print-contains-result info ips)))
+    (display/print-contains-result (:info parsed) ips)))
 
 (defn- handle-free [[parent & allocated]]
   (when (nil? parent) (die "free requires a parent CIDR and at least one allocated CIDR"))
+  (when (empty? allocated) (die "free requires at least one allocated CIDR"))
   (let [free-cidrs (ops/free-space parent allocated)
         free-infos (mapv subnet/subnet-info free-cidrs)]
     (display/print-free-result parent allocated free-infos)))
@@ -91,16 +107,22 @@
 (defn- handle-plan [[parent & host-strs]]
   (when (nil? parent)    (die "plan requires a parent CIDR and at least one host count"))
   (when (empty? host-strs) (die "plan requires at least one host count"))
-  (let [host-counts (mapv (fn [s]
-                            (let [n (try (Integer/parseInt s)
-                                         (catch Exception _ nil))]
-                              (when (nil? n)
-                                (die (str "Invalid host count: " s)))
-                              n))
-                          host-strs)]
-    (display/print-vlsm-result parent (ops/plan-vlsm parent host-counts))))
+  (let [host-counts (mapv parse-long-or-nil host-strs)
+        bad-input   (some identity
+                          (map (fn [raw parsed]
+                                 (when (nil? parsed) raw))
+                               host-strs
+                               host-counts))]
+    (when bad-input
+      (die (str "Invalid host count: " bad-input)))
+    (let [bad-count (some (fn [n] (when (< n 1) n)) host-counts)]
+      (when bad-count
+        (die (str "Host count must be ≥ 1, got: " bad-count)))
+      (display/print-vlsm-result parent (ops/plan-vlsm parent host-counts)))))
 
 (defn- handle-overlaps [cidrs]
+  (when (< (count cidrs) 2)
+    (die "overlaps requires at least two CIDRs"))
   (display/print-overlaps-result cidrs (ops/find-overlaps cidrs)))
 
 (defn- handle-lpm [rest-args]
@@ -131,28 +153,36 @@
     (display/print-diff-result before after added removed unchanged sorted-entries)))
 
 (defn- handle-classify [inputs]
+  (when (empty? inputs)
+    (die "classify requires at least one IP or CIDR"))
   (let [classifications (mapv classify/classify inputs)]
     (display/print-classify-result classifications)))
+
+(defn- emit-range-result! [start-ip start-n end-n]
+  (when (> start-n end-n) (die "Start IP must be ≤ end IP"))
+  (when (> end-n 0xFFFFFFFF) (die "End address exceeds 255.255.255.255"))
+  (display/print-range-result start-ip (ip/long->ip end-n)
+                              (subnet/range->cidrs start-n end-n)))
 
 (defn- handle-range [[start-ip end-arg]]
   (when (nil? start-ip) (die "range requires a start IP and an end IP or +count"))
   (when-not (subnet/valid-ip? start-ip) (die (str "Invalid IP: " start-ip)))
   (when (nil? end-arg) (die "range requires both a start IP and an end IP or +count"))
-  (let [start-n (ip/ip->long start-ip)
-        end-n   (if (str/starts-with? end-arg "+")
-                  ;; Parse count outside the let binding so die is not used as a value.
-                  (let [cnt (try (Long/parseLong (subs end-arg 1))
-                                 (catch Exception _ nil))]
-                    (when (nil? cnt) (die "Count must be a positive integer"))
-                    (when (< cnt 1)  (die "Count must be ≥ 1"))
-                    (when (> cnt (- 0x100000000 start-n)) (die "Count exceeds available address space"))
-                    (+ start-n cnt -1))
-                  (do (when-not (subnet/valid-ip? end-arg) (die (str "Invalid IP: " end-arg)))
-                      (ip/ip->long end-arg)))]
-    (when (> start-n end-n) (die "Start IP must be ≤ end IP"))
-    (when (> end-n 0xFFFFFFFF) (die "End address exceeds 255.255.255.255"))
-    (display/print-range-result start-ip (ip/long->ip end-n)
-                                (subnet/range->cidrs start-n end-n))))
+  (let [start-n (ip/ip->long start-ip)]
+    (if (str/starts-with? end-arg "+")
+      (let [cnt (parse-long-or-nil (subs end-arg 1))]
+        (when (nil? cnt) (die "Count must be a positive integer"))
+        (when (< cnt 1)  (die "Count must be ≥ 1"))
+        (when (> cnt (- 0x100000000 start-n)) (die "Count exceeds available address space"))
+        (emit-range-result! start-ip start-n (+ start-n cnt -1)))
+      (do
+        (when-not (subnet/valid-ip? end-arg) (die (str "Invalid IP: " end-arg)))
+        (emit-range-result! start-ip start-n (ip/ip->long end-arg))))))
+
+(defn- handle-interactive-tree [[parent & extra]]
+  (when (nil? parent) (die "tree requires a parent CIDR"))
+  (when (seq extra) (die "tree accepts exactly one parent CIDR"))
+  (tui/run-tree! parent))
 
 (def ^:private subcommands
   {"aggregate" handle-aggregate
@@ -163,11 +193,12 @@
    "lpm"       handle-lpm
    "diff"      handle-diff
    "classify"  handle-classify
-   "range"     handle-range})
+   "range"     handle-range
+   "tree"      handle-interactive-tree})
 
 (defn -main [& args]
   (let [argv     (vec args)
-        sep-idx  (.indexOf argv "--")
+        sep-idx  (index-of argv "--")
         pre-args (if (not= sep-idx -1) (subvec argv 0 sep-idx) argv)
         diff-rhs (when (>= sep-idx 0) (subvec argv (inc sep-idx)))
         {:keys [options arguments errors summary]} (parse-opts pre-args cli-options)

@@ -126,23 +126,25 @@
   (println (format "\n  Added: %d  Removed: %d  Unchanged: %d\n"
                    (count added) (count removed) (count unchanged))))
 
+(defn- category-label [{:keys [name spans? bcast-name category-path]}]
+  (if (seq category-path)
+    (str/join " → " (map :name category-path))
+    (str name (when spans? (str " → " bcast-name)))))
+
 (defn print-classify-result
   "Prints RFC classification for each pre-computed classification map to stdout."
   [classifications]
   (let [;; Compute category column width dynamically so spanning CIDRs like
         ;; "Documentation TEST-NET-3 → Private" don't overflow into the RFC column.
         cat-width (apply max 8
-                         (map (fn [{:keys [name spans? bcast-name]}]
-                                (count (str name (when spans? (str " → " bcast-name)))))
-                              classifications))
+                         (map #(count (category-label %)) classifications))
         fmt (str "  %-22s %-" (+ cat-width 2) "s %-12s %s")]
     (println)
     (println (format fmt "Input" "Category" "RFC" "Routable"))
     (println (apply str (repeat (+ 22 cat-width 30) "-")))
-    (doseq [{:keys [input name rfc routable? spans? bcast-name]} classifications]
-      (let [rfc-str (if (str/blank? rfc) "-" rfc)
-            note    (when spans? (format " → %s" bcast-name))]
-        (println (format fmt input (str name (or note "")) rfc-str (if routable? "yes" "no")))))
+    (doseq [{:keys [input rfc routable?] :as classification} classifications]
+      (let [rfc-str (if (str/blank? rfc) "-" rfc)]
+        (println (format fmt input (category-label classification) rfc-str (if routable? "yes" "no")))))
     (println)))
 
 (defn print-range-result
