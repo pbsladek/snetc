@@ -15,6 +15,12 @@
       (and (= 1 (:exit (ex-data e)))
            (boolean (re-find pattern (ex-message e)))))))
 
+(defn- exits-empty? [f]
+  (let [called (atom false)]
+    (binding [core/*exit-empty-fn* (fn [] (reset! called true) (throw (ex-info "" {:exit 2})))]
+      (try (f) (catch clojure.lang.ExceptionInfo _ nil)))
+    @called))
+
 (deftest handler-validation-test
   (testing "classify requires at least one input"
     (is (dies-with? #(#'core/handle-classify []) #"classify requires")))
@@ -183,3 +189,116 @@
     (let [out (with-out-str (#'core/handle-info "10.0.0.1/32" :short? true))]
       (is (clojure.string/includes? out "10.0.0.1/32"))
       (is (clojure.string/includes? out "1 hosts")))))
+
+;;; ── handle-validate ──────────────────────────────────────────────────────────
+
+(deftest handle-validate-test
+  (testing "all valid inputs → exit 0"
+    (let [out  (with-out-str (#'core/handle-validate ["10.0.0.0/24" "192.168.1.1"]))
+          lines (clojure.string/split-lines out)]
+      (is (every? #(clojure.string/includes? % "ok")
+                  (filter #(clojure.string/includes? % "/") lines)))))
+
+  (testing "any invalid input → calls exit-empty!"
+    (is (exits-empty? #(with-out-str (#'core/handle-validate ["10.0.0.0/24" "bad"])))))
+
+  (testing "valid CIDR type is reported"
+    (let [out (with-out-str (#'core/handle-validate ["10.0.0.0/8"]))]
+      (is (clojure.string/includes? out "cidr"))))
+
+  (testing "valid IP type is reported"
+    (let [out (with-out-str (#'core/handle-validate ["10.0.0.1"]))]
+      (is (clojure.string/includes? out "ip"))))
+
+  (testing "invalid input shows FAIL and error message"
+    (let [out (with-out-str
+                (binding [core/*exit-empty-fn* (fn [] (throw (ex-info "" {:exit 2})))]
+                  (try (#'core/handle-validate ["badstuff"])
+                       (catch clojure.lang.ExceptionInfo _ nil))))]
+      (is (clojure.string/includes? out "FAIL"))))
+
+  (testing "--json emits structured array"
+    (let [out  (with-out-str (binding [core/*json?* true
+                                       core/*exit-empty-fn* (fn [] (throw (ex-info "" {:exit 2})))]
+                               (try (#'core/handle-validate ["10.0.0.0/24" "bad"])
+                                    (catch clojure.lang.ExceptionInfo _ nil))))
+          data (json/read-str out :key-fn keyword)]
+      (is (vector? data))
+      (is (= 2 (count data)))
+      (is (true?  (:valid (first data))))
+      (is (false? (:valid (second data))))
+      (is (= "cidr" (:type (first data)))))))
+
+;;; ── stdin fallback ───────────────────────────────────────────────────────────
+
+(deftest stdin-fallback-test
+  (testing "classify reads from stdin when no args given"
+    (let [stdin-text "10.0.0.1\n8.8.8.8\n"
+          out (with-out-str
+                (with-in-str stdin-text
+                  (#'core/handle-classify [])))]
+      (is (clojure.string/includes? out "Private"))
+      (is (clojure.string/includes? out "Public"))))
+
+  (testing "overlaps reads from stdin when no args given"
+    (let [stdin-text "10.0.0.0/8\n10.0.0.0/24\n"
+          out (with-out-str
+                (with-in-str stdin-text
+                  (#'core/handle-overlaps [])))]
+      (is (clojure.string/includes? out "A contains B"))))
+
+  (testing "supernet reads from stdin when no args given"
+    (let [stdin-text "10.0.0.0/24\n10.0.1.0/24\n"
+          out (with-out-str
+                (with-in-str stdin-text
+                  (#'core/handle-supernet [])))]
+      (is (clojure.string/includes? out "10.0.0.0/23"))))
+
+  (testing "validate reads from stdin when no args given"
+    (let [stdin-text "10.0.0.1\nbad\n"
+          out (with-out-str
+                (binding [core/*exit-empty-fn* (fn [] (throw (ex-info "" {:exit 2})))]
+                  (try
+                    (with-in-str stdin-text
+                      (#'core/handle-validate []))
+                    (catch clojure.lang.ExceptionInfo _ nil))))]
+      (is (clojure.string/includes? out "ok"))
+      (is (clojure.string/includes? out "FAIL")))))
+
+;;; ── batch mode ───────────────────────────────────────────────────────────────
+
+(deftest batch-mode-test
+  (testing "batch executes multiple commands and returns array"
+    (let [input (json/write-str [{"cmd" "info"   "args" ["10.0.0.0/24"]}
+                                 {"cmd" "classify" "args" ["10.0.0.1"]}])
+          out   (with-out-str (with-in-str input (#'core/handle-batch [])))
+          data  (json/read-str out :key-fn keyword)]
+      (is (= 2 (count data)))
+      (is (= 0 (:exit (first data))))
+      (is (= "info" (:cmd (first data))))
+      (is (= "10.0.0.0/24" (-> data first :result :cidr)))))
+
+  (testing "batch captures per-command errors without aborting"
+    (let [input (json/write-str [{"cmd" "info" "args" ["badcidr"]}
+                                 {"cmd" "info" "args" ["10.0.0.0/24"]}])
+          out   (with-out-str (with-in-str input (#'core/handle-batch [])))
+          data  (json/read-str out :key-fn keyword)]
+      (is (= 2 (count data)))
+      (is (= 1 (:exit (first data))))
+      (is (string? (:error (first data))))
+      (is (= 0 (:exit (second data))))))
+
+  (testing "batch rejects non-array stdin"
+    (is (dies-with? #(with-in-str "{}" (#'core/handle-batch [])) #"array")))
+
+  (testing "batch item missing cmd field returns exit 1"
+    (let [input (json/write-str [{"args" ["10.0.0.0/24"]}])
+          out   (with-out-str (with-in-str input (#'core/handle-batch [])))
+          data  (json/read-str out :key-fn keyword)]
+      (is (= 1 (:exit (first data))))))
+
+  (testing "unknown command in batch returns exit 1"
+    (let [input (json/write-str [{"cmd" "notacommand" "args" []}])
+          out   (with-out-str (with-in-str input (#'core/handle-batch [])))
+          data  (json/read-str out :key-fn keyword)]
+      (is (= 1 (:exit (first data)))))))

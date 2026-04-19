@@ -309,6 +309,17 @@
     (println (str "  " c)))
   (println (str "\n  => " result-cidr "\n")))
 
+(defn print-validate-result
+  "Prints per-input validation results to stdout."
+  [results]
+  (let [fmt "  %-25s %-6s %-6s %s"]
+    (println)
+    (println (format fmt "Input" "Status" "Type" "Error"))
+    (println (apply str (repeat 70 "-")))
+    (doseq [{:keys [input valid type error]} results]
+      (println (format fmt input (if valid "ok" "FAIL") (or type "-") (or error ""))))
+    (println)))
+
 (defn print-lpm-result
   "Prints longest-prefix-match results to stdout.
   results is a seq of {:ip :match :prefix-str} maps pre-computed in the handler."
