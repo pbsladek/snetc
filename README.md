@@ -1,5 +1,9 @@
 # snetc
 
+[![Test](https://github.com/pbsladek/snetc/actions/workflows/test.yml/badge.svg)](https://github.com/pbsladek/snetc/actions/workflows/test.yml)
+[![Release](https://github.com/pbsladek/snetc/actions/workflows/release.yml/badge.svg)](https://github.com/pbsladek/snetc/actions/workflows/release.yml)
+[![Codecov](https://codecov.io/gh/pbsladek/snetc/graph/badge.svg)](https://codecov.io/gh/pbsladek/snetc)
+
 IPv4 subnet calculator for the command line.
 
 ## Install

@@ -1,10 +1,11 @@
 (ns snetc.ops-test
   (:require [clojure.test :refer [deftest is testing]]
-            [snetc.subnet :refer [cidr->range]]
+            [snetc.subnet :refer [cidr->range subnet-info]]
             [snetc.ops    :refer [aggregate free-space cidr-diff
-                                  hosts->min-prefix plan-vlsm
+                                  hosts->min-prefix next-available plan-vlsm
                                   find-overlaps longest-prefix-match
-                                  supernet]]))
+                                  supernet utilization-info
+                                  analyze-routes parse-routes]]))
 
 ;;; ── aggregate ────────────────────────────────────────────────────────────────
 
@@ -279,3 +280,116 @@
       (is (empty?             (:added   r)))
       (is (= ["10.0.0.0/24"] (:removed r)))
       (is (empty?             (:unchanged r))))))
+
+;;; ── next-available ───────────────────────────────────────────────────────────
+
+(deftest next-available-test
+  (testing "returns first aligned block for n hosts when nothing allocated"
+    (is (= "10.0.0.0/25" (next-available "10.0.0.0/24" [] 100))))
+
+  (testing "skips allocated blocks"
+    (is (= "10.0.0.128/25"
+           (next-available "10.0.0.0/24" ["10.0.0.0/25"] 100))))
+
+  (testing "result fits within parent"
+    (let [[pstart pend] (cidr->range "192.168.0.0/22")
+          result        (next-available "192.168.0.0/22" [] 500)
+          [rs re]       (cidr->range result)]
+      (is (>= rs pstart))
+      (is (<= re pend))))
+
+  (testing "returns nil when no block fits"
+    (is (nil? (next-available "10.0.0.0/30" ["10.0.0.0/30"] 100))))
+
+  (testing "single host gets /32"
+    (is (= "10.0.0.0/32" (next-available "10.0.0.0/24" [] 1)))))
+
+;;; ── utilization-info ─────────────────────────────────────────────────────────
+
+(deftest utilization-info-test
+  (testing "returns correct stats for 50% utilization"
+    (let [r (utilization-info "10.0.0.0/24" ["10.0.0.0/25"])]
+      (is (= 256 (:total-addrs r)))
+      (is (= 128 (:used-addrs  r)))
+      (is (= 128 (:free-addrs  r)))
+      (is (= 50  (:pct-used    r)))))
+
+  (testing "fully allocated shows no free blocks"
+    (let [r (utilization-info "10.0.0.0/24" ["10.0.0.0/24"])]
+      (is (empty? (:free-infos r)))
+      (is (nil?   (:fragmentation r)))))
+
+  (testing "fragmentation score increases with more free blocks"
+    (let [r1 (utilization-info "10.0.0.0/22" ["10.0.0.0/24" "10.0.2.0/24"])
+          r4 (utilization-info "10.0.0.0/20"
+                               ["10.0.0.0/24" "10.0.2.0/24" "10.0.4.0/24"
+                                "10.0.6.0/24" "10.0.8.0/24" "10.0.10.0/24"
+                                "10.0.12.0/24" "10.0.14.0/24"])]
+      (is (= "low"  (:fragmentation r1)))
+      (is (= "high" (:fragmentation r4)))))
+
+  (testing "largest-free points to the biggest free block"
+    (let [r (utilization-info "10.0.0.0/22" ["10.0.0.0/24"])]
+      (is (some? (:largest-free r)))
+      (is (= (:cidr (:largest-free r))
+             (:cidr (apply max-key :hosts (:free-infos r)))))))
+
+  (testing "bar string has the expected width"
+    (let [r (utilization-info "10.0.0.0/24" ["10.0.0.0/25"])]
+      (is (= 72 (count (:bar r)))))))
+
+;;; ── parse-routes ──────────────────────────────���──────────────────────────────
+
+(deftest parse-routes-test
+  (testing "extracts CIDRs from plain list"
+    (is (= ["10.0.0.0/24" "192.168.0.0/16"]
+           (parse-routes "10.0.0.0/24\n192.168.0.0/16\n"))))
+
+  (testing "extracts CIDRs from ip-route output style"
+    (let [text "10.0.0.0/24 dev eth0 proto kernel scope link src 10.0.0.5\n192.168.1.0/24 via 10.0.0.1 dev eth0"
+          r    (parse-routes text)]
+      (is (= 2 (count r)))
+      (is (some #{"10.0.0.0/24"} r))
+      (is (some #{"192.168.1.0/24"} r))))
+
+  (testing "ignores blank lines and comments"
+    (is (= ["10.0.0.0/24"]
+           (parse-routes "# comment\n\n10.0.0.0/24\n"))))
+
+  (testing "normalises host bits in CIDRs"
+    (let [r (parse-routes "10.0.0.5/24\n")]
+      (is (= ["10.0.0.0/24"] r))))
+
+  (testing "returns distinct CIDRs"
+    (is (= 1 (count (parse-routes "10.0.0.0/24\n10.0.0.0/24\n")))))
+
+  (testing "returns empty vec when no CIDRs found"
+    (is (= [] (parse-routes "no routes here\n")))))
+
+;;; ── analyze-routes ───────────────────────────────────────────────────────────
+
+(deftest analyze-routes-test
+  (testing "fully optimized routes show zero savings"
+    (let [r (analyze-routes ["10.0.0.0/24" "192.168.0.0/24"])]
+      (is (= 2 (:route-count      r)))
+      (is (= 2 (:aggregated-count r)))
+      (is (= 0 (:savings          r)))
+      (is (empty? (:groups    r)))
+      (is (empty? (:contained r)))))
+
+  (testing "summarizable routes show savings and groups"
+    (let [r (analyze-routes ["10.0.0.0/24" "10.0.1.0/24"])]
+      (is (= 2 (:route-count      r)))
+      (is (= 1 (:aggregated-count r)))
+      (is (= 1 (:savings          r)))
+      (is (= 1 (count (:groups r))))
+      (is (= "10.0.0.0/23" (:summary (first (:groups r)))))))
+
+  (testing "contained routes are detected"
+    (let [r (analyze-routes ["10.0.0.0/8" "10.0.0.0/24"])]
+      (is (= 1 (count (:contained r))))))
+
+  (testing "routes accessor preserves input"
+    (let [routes ["10.0.0.0/24" "10.0.1.0/24"]
+          r      (analyze-routes routes)]
+      (is (= routes (:routes r))))))

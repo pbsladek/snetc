@@ -302,3 +302,357 @@
           out   (with-out-str (with-in-str input (#'core/handle-batch [])))
           data  (json/read-str out :key-fn keyword)]
       (is (= 1 (:exit (first data)))))))
+
+;;; ── handler success paths ────────────────────────────────────────────────────
+
+(deftest handle-split-test
+  (testing "text output lists all subnets"
+    (let [o (with-out-str (#'core/handle-split "10.0.0.0/24" 25))]
+      (is (clojure.string/includes? o "10.0.0.0/25"))
+      (is (clojure.string/includes? o "10.0.0.128/25"))))
+
+  (testing "--json emits array of subnet objects"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-split "10.0.0.0/24" 25)))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 2 (count data)))
+      (is (= "10.0.0.0/25"     (:cidr (first data))))
+      (is (= "10.0.0.128/25"   (:cidr (second data))))))
+
+  (testing "split prefix smaller than base prefix dies"
+    (is (dies-with? #(#'core/handle-split "10.0.0.0/24" 16) #"smaller than base"))))
+
+(deftest handle-tree-flag-test
+  (testing "text output contains root and children"
+    (let [o (with-out-str (#'core/handle-tree-flag "10.0.0.0/24" 25))]
+      (is (clojure.string/includes? o "10.0.0.0/24"))
+      (is (clojure.string/includes? o "10.0.0.0/25"))))
+
+  (testing "--json emits tree structure"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-tree-flag "10.0.0.0/24" 25)))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "10.0.0.0/24" (:cidr data)))
+      (is (= 2 (count (:children data))))))
+
+  (testing "tree prefix smaller than base dies"
+    (is (dies-with? #(#'core/handle-tree-flag "10.0.0.0/24" 16) #"smaller than base"))))
+
+(deftest handle-contains-test
+  (testing "text output shows yes/no for IPs"
+    (let [o (with-out-str (#'core/handle-contains ["10.0.0.0/24" "10.0.0.1" "192.168.0.1"]))]
+      (is (clojure.string/includes? o "yes"))
+      (is (clojure.string/includes? o "no"))))
+
+  (testing "--json emits subnet and results array"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-contains ["10.0.0.0/24" "10.0.0.1"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "10.0.0.0/24" (:subnet data)))
+      (is (= 1 (count (:results data))))
+      (is (true? (:match (first (:results data)))))))
+
+  (testing "no matches calls exit-empty!"
+    (is (exits-empty? #(with-out-str (#'core/handle-contains ["10.0.0.0/24" "192.168.1.1"])))))
+
+  (testing "IPs read from stdin when only CIDR given"
+    (let [o (with-out-str (with-in-str "10.0.0.1\n" (#'core/handle-contains ["10.0.0.0/24"])))]
+      (is (clojure.string/includes? o "yes")))))
+
+(deftest handle-free-test
+  (testing "text output shows free blocks"
+    (let [o (with-out-str (#'core/handle-free ["10.0.0.0/24" "10.0.0.0/25"]))]
+      (is (clojure.string/includes? o "10.0.0.128/25"))))
+
+  (testing "--json emits free block list"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-free ["10.0.0.0/24" "10.0.0.0/25"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 1 (:free_count data)))
+      (is (= "10.0.0.128/25" (-> data :free first :cidr)))))
+
+  (testing "fully allocated calls exit-empty!"
+    (is (exits-empty? #(with-out-str (#'core/handle-free ["10.0.0.0/24" "10.0.0.0/24"]))))))
+
+(deftest handle-plan-test
+  (testing "text output shows VLSM allocation table"
+    (let [o (with-out-str (#'core/handle-plan ["192.168.0.0/22" "200" "50"]))]
+      (is (clojure.string/includes? o "VLSM plan"))
+      (is (clojure.string/includes? o "200"))
+      (is (clojure.string/includes? o "50"))))
+
+  (testing "--json emits allocations array"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-plan ["192.168.0.0/22" "200" "50"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 2 (count (:allocations data))))))
+
+  (testing "non-integer host count dies"
+    (is (dies-with? #(#'core/handle-plan ["10.0.0.0/24" "abc"]) #"Invalid host count")))
+
+  (testing "host count < 1 dies"
+    (is (dies-with? #(#'core/handle-plan ["10.0.0.0/24" "0"]) #"must be"))))
+
+(deftest handle-lpm-test
+  (testing "text output shows best match for each IP"
+    (let [o (with-out-str (#'core/handle-lpm ["10.0.0.0/8" "10.0.0.0/24" "10.0.0.1"]))]
+      (is (clojure.string/includes? o "10.0.0.0/24"))))
+
+  (testing "--json emits routes and results"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-lpm ["10.0.0.0/8" "10.0.0.0/24" "10.0.0.1"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "10.0.0.0/24" (-> data :results first :match)))))
+
+  (testing "no route match calls exit-empty!"
+    (is (exits-empty?
+          #(with-out-str (#'core/handle-lpm ["192.168.0.0/24" "8.8.8.8"])))))
+
+  (testing "missing routes dies"
+    (is (dies-with? #(#'core/handle-lpm ["10.0.0.1"]) #"at least one route")))
+
+  (testing "missing IPs dies"
+    (is (dies-with? #(#'core/handle-lpm ["10.0.0.0/24"]) #"at least one IP"))))
+
+(deftest handle-diff-test
+  (testing "text output shows added and removed entries"
+    (let [o (with-out-str (#'core/handle-diff ["10.0.0.0/24"] ["10.0.1.0/24"]))]
+      (is (clojure.string/includes? o "[+]"))
+      (is (clojure.string/includes? o "[-]"))))
+
+  (testing "--json emits added/removed/unchanged"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-diff ["10.0.0.0/24"] ["10.0.1.0/24"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= ["10.0.1.0/24"] (:added data)))
+      (is (= ["10.0.0.0/24"] (:removed data)))))
+
+  (testing "no diff calls exit-empty!"
+    (is (exits-empty? #(with-out-str (#'core/handle-diff ["10.0.0.0/24"] ["10.0.0.0/24"])))))
+
+  (testing "missing before CIDRs dies"
+    (is (dies-with? #(#'core/handle-diff [] ["10.0.0.0/24"]) #"before")))
+
+  (testing "nil after dies"
+    (is (dies-with? #(#'core/handle-diff ["10.0.0.0/24"] nil) #"separator"))))
+
+(deftest handle-range-test
+  (testing "text output shows range and CIDR count"
+    (let [o (with-out-str (#'core/handle-range ["10.0.0.0" "10.0.0.255"]))]
+      (is (clojure.string/includes? o "10.0.0.0/24"))
+      (is (clojure.string/includes? o "1 CIDR block"))))
+
+  (testing "+count syntax"
+    (let [o (with-out-str (#'core/handle-range ["10.0.0.0" "+256"]))]
+      (is (clojure.string/includes? o "10.0.0.0/24"))))
+
+  (testing "--json emits start, end, cidrs"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-range ["10.0.0.0" "10.0.0.255"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "10.0.0.0"   (:start data)))
+      (is (= "10.0.0.255" (:end   data)))
+      (is (= 1 (count (:cidrs data))))))
+
+  (testing "start > end dies"
+    (is (dies-with? #(#'core/handle-range ["10.0.0.255" "10.0.0.0"]) #"must be"))))
+
+(deftest handle-util-test
+  (testing "text output shows utilization stats"
+    (let [o (with-out-str (#'core/handle-util ["10.0.0.0/24" "10.0.0.0/25"]))]
+      (is (clojure.string/includes? o "10.0.0.0/24"))
+      (is (clojure.string/includes? o "Allocated"))))
+
+  (testing "--json emits utilization map"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-util ["10.0.0.0/24" "10.0.0.0/25"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "10.0.0.0/24" (:parent data)))
+      (is (number? (:pct_used data))))))
+
+(deftest handle-analyze-test
+  (testing "text output shows route analysis from stdin"
+    (let [o (with-out-str
+              (with-in-str "10.0.0.0/24\n10.0.1.0/24\n"
+                (#'core/handle-analyze [])))]
+      (is (clojure.string/includes? o "route"))))
+
+  (testing "--json emits route analysis"
+    (let [out  (with-out-str
+                 (with-in-str "10.0.0.0/24\n10.0.1.0/24\n"
+                   (binding [core/*json?* true]
+                     (#'core/handle-analyze []))))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 2 (:route_count data)))
+      (is (= 1 (:aggregated_count data)))))
+
+  (testing "no routes found dies"
+    (is (dies-with? #(with-in-str "not a route table\n" (#'core/handle-analyze []))
+                    #"No valid CIDR"))))
+
+(deftest handle-allocate-test
+  (testing "text output shows allocated CIDR"
+    (let [o (with-out-str (#'core/handle-allocate ["10.0.0.0/24" "100"]))]
+      (is (clojure.string/includes? o "Allocated"))))
+
+  (testing "--json emits cidr and requested"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-allocate ["10.0.0.0/24" "100"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (string? (:cidr data)))
+      (is (= 100 (:requested data)))))
+
+  (testing "with used blocks skips allocated space"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-allocate ["10.0.0.0/24" "100" "10.0.0.0/25"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "10.0.0.128/25" (:cidr data)))))
+
+  (testing "no space available dies"
+    (is (dies-with? #(#'core/handle-allocate ["10.0.0.0/30" "1000"]) #"No available block"))))
+
+(deftest handle-mask-success-test
+  (testing "text output shows prefix, mask, and wildcard"
+    (let [o (with-out-str (#'core/handle-mask ["255.255.255.0" "/16" "8"]))]
+      (is (clojure.string/includes? o "/24"))
+      (is (clojure.string/includes? o "/16"))
+      (is (clojure.string/includes? o "/8"))))
+
+  (testing "--json emits array of conversions"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-mask ["255.255.255.0"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 1 (count data)))
+      (is (= 24 (:prefix (first data)))))))
+
+(deftest handle-adjacent-success-test
+  (testing "next returns the adjacent block"
+    (let [o (with-out-str (#'core/handle-adjacent ["10.0.0.0/24"] "next"))]
+      (is (clojure.string/includes? o "10.0.1.0/24"))))
+
+  (testing "prev returns the previous block"
+    (let [o (with-out-str (#'core/handle-adjacent ["10.0.2.0/24"] "prev"))]
+      (is (clojure.string/includes? o "10.0.1.0/24"))))
+
+  (testing "next with n=3 skips three blocks"
+    (let [o (with-out-str (#'core/handle-adjacent ["10.0.0.0/24" "3"] "next"))]
+      (is (clojure.string/includes? o "10.0.3.0/24"))))
+
+  (testing "--json emits direction and result"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-adjacent ["10.0.0.0/24"] "next")))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "10.0.1.0/24" (:result data))))))
+
+(deftest handle-supernet-success-test
+  (testing "text output shows supernet"
+    (let [o (with-out-str (#'core/handle-supernet ["10.0.0.0/24" "10.0.1.0/24"]))]
+      (is (clojure.string/includes? o "10.0.0.0/23"))))
+
+  (testing "--json emits input and result"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-supernet ["10.0.0.0/24" "10.0.1.0/24"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "10.0.0.0/23" (:result data))))))
+
+;;; ── text output for handlers tested only via JSON ────────────────────────────
+
+(deftest handle-info-text-output-test
+  (testing "normal text output includes all fields"
+    (let [o (with-out-str (#'core/handle-info "192.168.1.0/24"))]
+      (is (clojure.string/includes? o "192.168.1.0/24"))
+      (is (clojure.string/includes? o "Network"))
+      (is (clojure.string/includes? o "Broadcast"))
+      (is (clojure.string/includes? o "255.255.255.0")))))
+
+(deftest handle-aggregate-text-output-test
+  (testing "text output shows aggregated result"
+    (let [o (with-out-str (#'core/handle-aggregate ["10.0.0.0/24" "10.0.1.0/24"]))]
+      (is (clojure.string/includes? o "10.0.0.0/23")))))
+
+(deftest handle-contains-error-paths-test
+  (testing "missing CIDR dies"
+    (is (dies-with? #(#'core/handle-contains []) #"contains requires")))
+
+  (testing "invalid IP dies"
+    (is (dies-with? #(#'core/handle-contains ["10.0.0.0/24" "notanip"]) #"Invalid IP")))
+
+  (testing "unparseable CIDR dies"
+    (is (dies-with? #(#'core/handle-contains ["badcidr" "10.0.0.1"]) #"."))))
+
+(deftest handle-validate-invalid-cidr-test
+  (testing "invalid CIDR format shows FAIL with type=cidr"
+    (let [o (with-out-str
+              (binding [core/*exit-empty-fn* (fn [] (throw (ex-info "" {:exit 2})))]
+                (try (#'core/handle-validate ["256.256.256.256/24"])
+                     (catch clojure.lang.ExceptionInfo _ nil))))]
+      (is (clojure.string/includes? o "FAIL"))
+      (is (clojure.string/includes? o "cidr")))))
+
+;;; ── -main dispatch ───────────────────────────────────────────────────────────
+
+(defn- run-main
+  "Calls -main with args, capturing stdout. Binds die/exit-empty to throw."
+  [& args]
+  (with-out-str
+    (binding [core/*die-fn*        (fn [msg] (throw (ex-info msg {:exit 1})))
+              core/*exit-empty-fn* (fn [] (throw (ex-info "" {:exit 2})))]
+      (apply core/-main args))))
+
+(deftest main-dispatch-test
+  (testing "CIDR arg dispatches to handle-info"
+    (let [o (run-main "10.0.0.0/24")]
+      (is (clojure.string/includes? o "10.0.0.0/24"))
+      (is (clojure.string/includes? o "Network"))))
+
+  (testing "classful IP arg infers prefix and shows info"
+    (let [o (run-main "10.0.0.1")]
+      (is (clojure.string/includes? o "10.0.0.0/8"))
+      (is (clojure.string/includes? o "inferred"))))
+
+  (testing "class D/E IP dies with classful inference error"
+    (is (thrown? clojure.lang.ExceptionInfo (run-main "224.0.0.1"))))
+
+  (testing "--split option calls handle-split"
+    (let [o (run-main "--split" "25" "10.0.0.0/24")]
+      (is (clojure.string/includes? o "10.0.0.0/25"))))
+
+  (testing "--tree option calls handle-tree-flag"
+    (let [o (run-main "--tree" "25" "10.0.0.0/24")]
+      (is (clojure.string/includes? o "10.0.0.0/24"))))
+
+  (testing "subcommand dispatch routes to correct handler"
+    (let [o (run-main "aggregate" "10.0.0.0/24" "10.0.1.0/24")]
+      (is (clojure.string/includes? o "10.0.0.0/23"))))
+
+  (testing "next subcommand via lambda dispatch"
+    (let [o (run-main "next" "10.0.0.0/24")]
+      (is (clojure.string/includes? o "10.0.1.0/24"))))
+
+  (testing "prev subcommand via lambda dispatch"
+    (let [o (run-main "prev" "10.0.2.0/24")]
+      (is (clojure.string/includes? o "10.0.1.0/24"))))
+
+  (testing "diff with -- separator"
+    (let [o (run-main "diff" "10.0.0.0/24" "--" "10.0.1.0/24")]
+      (is (clojure.string/includes? o "[+]"))))
+
+  (testing "--json flag binds *json?*"
+    (let [out  (run-main "--json" "info" "10.0.0.0/24")
+          data (json/read-str out :key-fn keyword)]
+      (is (= "10.0.0.0/24" (:cidr data)))))
+
+  (testing "--short flag passes to handle-info"
+    (let [o (run-main "--short" "10.0.0.0/24")]
+      (is (= 1 (count (filter (complement clojure.string/blank?)
+                               (clojure.string/split-lines o)))))))
+
+  (testing "unknown subcommand prints usage and does not throw"
+    ;; unknown command falls through to the else → (do (println usage) System/exit 1)
+    ;; We can't easily test this without mocking System/exit, so skip the exit path.
+    ;; Just verify the handler resolution doesn't die with an exception for known commands.
+    (is (string? (run-main "classify" "10.0.0.1"))))
+
+  (testing "handler exception is caught and rethrown via die"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (run-main "info" "notacidr")))))

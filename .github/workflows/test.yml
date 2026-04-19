@@ -26,3 +26,12 @@ jobs:
 
       - name: Run tests
         run: bin/kaocha
+
+      - name: Generate coverage
+        run: bin/kaocha --plugin kaocha.plugin/cloverage --codecov
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: target/coverage/codecov.json
+          fail_ci_if_error: false
