@@ -128,6 +128,22 @@
          last
          second)))
 
+(defn supernet
+  "Returns the smallest single CIDR string that covers all given cidrs.
+  Walks up the prefix tree until it finds a block that contains every input range."
+  [cidrs]
+  (let [ranges  (mapv subnet/cidr->range cidrs)
+        min-start (apply min (map first ranges))
+        max-end   (apply max (map second ranges))]
+    (loop [prefix 32]
+      (when (< prefix 0)
+        (throw (ex-info "Cannot find covering supernet (exhausted all prefixes)" {})))
+      (let [net   (ip/network-addr min-start prefix)
+            bcast (ip/broadcast-addr net prefix)]
+        (if (<= max-end bcast)
+          (str (ip/long->ip net) "/" prefix)
+          (recur (dec prefix)))))))
+
 (defn hosts->min-prefix
   "Returns the smallest prefix length whose usable host count is >= n."
   [n]
@@ -138,6 +154,21 @@
       (< p 0)                (throw (ex-info (str "No prefix can fit " n " hosts") {:n n}))
       (>= (ip/usable-hosts p) n) p
       :else                  (recur (dec p)))))
+
+(defn next-available
+  "Returns the first available aligned CIDR for n hosts within parent-cidr,
+  given already-allocated CIDRs. Returns nil if no block fits."
+  [parent-cidr allocated-cidrs n]
+  (let [prefix (hosts->min-prefix n)
+        size   (bit-shift-left 1 (- 32 prefix))
+        gaps   (free-space parent-cidr allocated-cidrs)]
+    (some (fn [gap-cidr]
+            (let [[gs ge] (subnet/cidr->range gap-cidr)
+                  remainder (mod gs size)
+                  aligned   (if (zero? remainder) gs (+ gs (- size remainder)))]
+              (when (<= (+ aligned size -1) ge)
+                (str (ip/long->ip aligned) "/" prefix))))
+          gaps)))
 
 (defn- fragmentation-score [free-count]
   (cond

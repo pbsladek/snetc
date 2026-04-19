@@ -3,7 +3,8 @@
             [snetc.subnet :refer [cidr->range]]
             [snetc.ops    :refer [aggregate free-space cidr-diff
                                   hosts->min-prefix plan-vlsm
-                                  find-overlaps longest-prefix-match]]))
+                                  find-overlaps longest-prefix-match
+                                  supernet]]))
 
 ;;; ── aggregate ────────────────────────────────────────────────────────────────
 
@@ -197,6 +198,35 @@
   (testing "network address and broadcast address of a block both match"
     (is (= "192.168.0.0/24" (longest-prefix-match "192.168.0.0"   ["192.168.0.0/24"])))
     (is (= "192.168.0.0/24" (longest-prefix-match "192.168.0.255" ["192.168.0.0/24"])))))
+
+;;; ── supernet ─────────────────────────────────────────────────────────────────
+
+(deftest supernet-test
+  (testing "two adjacent /24s → /23"
+    (is (= "10.0.0.0/23" (supernet ["10.0.0.0/24" "10.0.1.0/24"]))))
+
+  (testing "same CIDR twice → that CIDR"
+    (is (= "10.0.0.0/24" (supernet ["10.0.0.0/24" "10.0.0.0/24"]))))
+
+  (testing "one block already contains the other → containing block"
+    (is (= "10.0.0.0/8" (supernet ["10.0.0.0/8" "10.1.2.0/24"]))))
+
+  (testing "non-aligned inputs require a wider covering block"
+    ;; .0/24 and .5/24 span .0–.5 so the tightest cover is .0/21
+    (is (= "192.168.0.0/21" (supernet ["192.168.0.0/24" "192.168.5.0/24"]))))
+
+  (testing "three inputs"
+    (is (= "192.168.0.0/21"
+           (supernet ["192.168.0.0/24" "192.168.5.0/24" "192.168.3.0/24"]))))
+
+  (testing "result fully contains every input"
+    (let [inputs ["10.0.0.0/24" "10.0.3.0/24" "10.0.7.0/24"]
+          result (supernet inputs)
+          [rs re] (cidr->range result)]
+      (doseq [c inputs]
+        (let [[s e] (cidr->range c)]
+          (is (<= rs s))
+          (is (>= re e)))))))
 
 ;;; ── cidr-diff ────────────────────────────────────────────────────────────────
 

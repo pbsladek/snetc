@@ -10,6 +10,10 @@
             [snetc.tui         :as tui])
   (:gen-class))
 
+;; When true all handlers emit JSON instead of human-readable tables.
+;; Bound in -main from the --json CLI flag.
+(def ^:dynamic *json?* false)
+
 (def ^:private cli-options
   [[nil  "--split PREFIX" "List all /PREFIX subnets within CIDR"
     :parse-fn #(Integer/parseInt %)
@@ -17,6 +21,8 @@
    [nil  "--tree PREFIX"  "Show subnet split tree down to /PREFIX"
     :parse-fn #(Integer/parseInt %)
     :validate [#(<= 0 % 32) "Prefix must be 0–32"]]
+   [nil  "--json"         "Output as JSON (works with all subcommands)"]
+   [nil  "--short"        "Output info as a single terse line"]
    ["-h" "--help"         "Print this help and exit"]])
 
 (defn- usage [summary]
@@ -24,31 +30,42 @@
             ["snetc – IPv4 subnet calculator"
              ""
              "Usage:"
-             "  snetc <cidr> [options]"
-             "  snetc <subcommand> [args...]"
+             "  snetc <cidr> [--json|--short]"
+             "  snetc <subcommand> [args...] [--json]"
              ""
              "Options:"
              summary
              ""
              "Subcommands:"
-             "  aggregate <cidr> [...]      Aggregate CIDRs to minimal covering set"
-             "  aggregate                   Read CIDRs from stdin (one per line)"
-             "  contains <cidr> <ip> [...]  Check which IPs fall within a subnet"
-             "  free <parent> <alloc> [...]  Show unallocated space in a subnet"
-             "  plan <parent> <n> [...]      VLSM: allocate subnets by host count"
-             "  overlaps <cidr> [...]        Detect overlapping/contained networks"
-             "  lpm <cidr|ip> ...            Longest-prefix match"
-             "  diff <cidr> ... -- <cidr>    Diff two sets of CIDRs"
-             "  classify <ip-or-cidr> ...    RFC classification of IPs/CIDRs"
-             "  range <start> <end|+count>   Convert IP range to minimal CIDRs"
-             "  tree <cidr>                  Interactive split/join subnet planner"
-             "  util <parent> <alloc> [...]  Visualise address space utilisation"
-             "  analyze [<file>]             Analyse route table (or stdin)"]))
+             "  aggregate <cidr> [...]        Aggregate CIDRs to minimal covering set"
+             "  aggregate                     Read CIDRs from stdin (one per line)"
+             "  allocate <parent> <hosts> [...used]  Next available CIDR for N hosts"
+             "  contains <cidr> <ip> [...]    Check which IPs fall within a subnet"
+             "  free <parent> <alloc> [...]   Show unallocated space in a subnet"
+             "  plan <parent> <n> [...]       VLSM: allocate subnets by host count"
+             "  overlaps <cidr> [...]         Detect overlapping/contained networks"
+             "  lpm <cidr|ip> ...             Longest-prefix match"
+             "  diff <cidr> ... -- <cidr>     Diff two sets of CIDRs"
+             "  classify <ip-or-cidr> ...     RFC classification of IPs/CIDRs"
+             "  range <start> <end|+count>    Convert IP range to minimal CIDRs"
+             "  tree <cidr>                   Interactive split/join subnet planner"
+             "  util <parent> <alloc> [...]   Visualise address space utilisation"
+             "  analyze [<file>]              Analyse route table (or stdin)"
+             "  supernet <cidr> [...]         Smallest CIDR covering all inputs"
+             "  mask <mask|/prefix|n> [...]   Convert between mask and prefix notation"
+             "  next <cidr> [n]               Next (or Nth) adjacent block of same size"
+             "  prev <cidr> [n]               Previous adjacent block of same size"]))
 
 (defn- die [msg]
   (binding [*out* *err*]
     (println msg))
   (System/exit 1))
+
+(defn- exit-empty!
+  "Exit with code 2: command ran successfully but produced no results.
+  Agents can use this to distinguish 'found nothing' from errors (exit 1)."
+  []
+  (System/exit 2))
 
 (defn- parse-long-or-nil [s]
   (try
@@ -59,20 +76,64 @@
   (or (first (keep-indexed (fn [idx x] (when (= needle x) idx)) xs))
       -1))
 
-(defn- handle-info [cidr]
-  (display/print-subnet-info (subnet/subnet-info cidr)))
+(defn- classful-prefix
+  "Returns the classful prefix length (8, 16, or 24) for a dotted-decimal IP string.
+  Class A: 1–127 → /8, Class B: 128–191 → /16, Class C: 192–223 → /24.
+  Returns nil for class D/E or 0.x addresses."
+  [ip-str]
+  (let [first-octet (try (Long/parseLong (first (str/split ip-str #"\." 2)))
+                         (catch Exception _ nil))]
+    (cond
+      (nil? first-octet)        nil
+      (<= 1   first-octet 127)  8
+      (<= 128 first-octet 191)  16
+      (<= 192 first-octet 223)  24
+      :else                     nil)))
+
+(defn- info->json
+  "Converts a subnet-info map to a JSON-friendly map with snake_case keys."
+  [info]
+  (cond-> {:cidr       (:cidr       info)
+           :network    (:network    info)
+           :first_host (:first-host info)
+           :last_host  (:last-host  info)
+           :hosts      (:hosts      info)
+           :mask       (:mask       info)
+           :wildcard   (:wildcard   info)
+           :prefix     (:prefix     info)}
+    (:broadcast info) (assoc :broadcast (:broadcast info))))
+
+(defn- tree->json [node]
+  (let [info (:info node)]
+    {:cidr     (:cidr  info)
+     :hosts    (:hosts info)
+     :children (when (:children node)
+                 (mapv tree->json (:children node)))}))
+
+(defn- handle-info [cidr & {:keys [short?]}]
+  (let [info (subnet/subnet-info cidr)]
+    (cond
+      *json?* (display/print-json (info->json info))
+      short?  (display/print-subnet-info-short info)
+      :else   (display/print-subnet-info info))))
 
 (defn- handle-split [cidr new-prefix]
   (let [base (:prefix (subnet/subnet-info cidr))]
     (when (< new-prefix base)
       (die (str "Split prefix /" new-prefix " is smaller than base /" base)))
-    (display/print-split-table (subnet/split-subnets cidr new-prefix))))
+    (let [subnets (subnet/split-subnets cidr new-prefix)]
+      (if *json?*
+        (display/print-json (mapv info->json subnets))
+        (display/print-split-table subnets)))))
 
 (defn- handle-tree [cidr max-prefix]
   (let [base (:prefix (subnet/subnet-info cidr))]
     (when (< max-prefix base)
       (die (str "Max prefix /" max-prefix " is smaller than base /" base)))
-    (display/print-subnet-tree (subnet/subnet-tree cidr max-prefix))))
+    (let [tree (subnet/subnet-tree cidr max-prefix)]
+      (if *json?*
+        (display/print-json (tree->json tree))
+        (display/print-subnet-tree tree)))))
 
 (defn- handle-aggregate [rest-args]
   (let [cidrs (if (seq rest-args)
@@ -85,7 +146,12 @@
                      vec))]
     (when (empty? cidrs)
       (die "aggregate requires at least one CIDR (or CIDRs on stdin)"))
-    (display/print-aggregate-result cidrs (ops/aggregate cidrs))))
+    (let [result (ops/aggregate cidrs)]
+      (if *json?*
+        (display/print-json {:input_count  (count cidrs)
+                             :result_count (count result)
+                             :result       (vec result)})
+        (display/print-aggregate-result cidrs result)))))
 
 (defn- handle-contains [[cidr & ips]]
   (when (nil? cidr) (die "contains requires a CIDR and at least one IP"))
@@ -97,14 +163,36 @@
     (doseq [ip ips]
       (when-not (subnet/valid-ip? ip)
         (die (str "Invalid IP address: " ip))))
-    (display/print-contains-result (:info parsed) ips)))
+    (let [info    (:info parsed)
+          results (mapv (fn [ip]
+                          (let [in?  (subnet/ip-in-cidr? ip cidr)
+                                role (when in?
+                                       (cond
+                                         (= ip (:network   info)) "network"
+                                         (= ip (:broadcast info)) "broadcast"
+                                         :else                    "host"))]
+                            {:ip ip :match in? :role role}))
+                        ips)]
+      (if *json?*
+        (display/print-json {:subnet (:cidr info) :results results})
+        (display/print-contains-result info ips))
+      (when (not-any? :match results)
+        (exit-empty!)))))
 
 (defn- handle-free [[parent & allocated]]
   (when (nil? parent) (die "free requires a parent CIDR and at least one allocated CIDR"))
   (when (empty? allocated) (die "free requires at least one allocated CIDR"))
   (let [free-cidrs (ops/free-space parent allocated)
         free-infos (mapv subnet/subnet-info free-cidrs)]
-    (display/print-free-result parent allocated free-infos)))
+    (if *json?*
+      (display/print-json {:parent          parent
+                           :allocated_count (count allocated)
+                           :free_count      (count free-infos)
+                           :free            (mapv #(select-keys % [:cidr :hosts :mask])
+                                                  free-infos)})
+      (display/print-free-result parent allocated free-infos))
+    (when (empty? free-infos)
+      (exit-empty!))))
 
 (defn- handle-plan [[parent & host-strs]]
   (when (nil? parent)    (die "plan requires a parent CIDR and at least one host count"))
@@ -120,12 +208,28 @@
     (let [bad-count (some (fn [n] (when (< n 1) n)) host-counts)]
       (when bad-count
         (die (str "Host count must be ≥ 1, got: " bad-count)))
-      (display/print-vlsm-result parent (ops/plan-vlsm parent host-counts)))))
+      (let [allocs (ops/plan-vlsm parent host-counts)]
+        (if *json?*
+          (display/print-json
+           {:parent      parent
+            :allocations (mapv (fn [{:keys [info requested]}]
+                                 (assoc (info->json info) :requested requested))
+                               allocs)})
+          (display/print-vlsm-result parent allocs))))))
 
 (defn- handle-overlaps [cidrs]
   (when (< (count cidrs) 2)
     (die "overlaps requires at least two CIDRs"))
-  (display/print-overlaps-result cidrs (ops/find-overlaps cidrs)))
+  (let [overlaps (ops/find-overlaps cidrs)]
+    (if *json?*
+      (display/print-json {:checked       (count cidrs)
+                           :overlap_count (count overlaps)
+                           :overlaps      (mapv (fn [{:keys [a b type]}]
+                                                  {:a a :b b :type (name type)})
+                                                overlaps)})
+      (display/print-overlaps-result cidrs overlaps))
+    (when (empty? overlaps)
+      (exit-empty!))))
 
 (defn- handle-lpm [rest-args]
   (let [routes (filterv #(str/includes? % "/") rest-args)
@@ -140,7 +244,18 @@
                                              (str "/" (:prefix (subnet/parse-cidr match))))]
                             {:ip ip :match match :prefix-str prefix-str}))
                         ips)]
-      (display/print-lpm-result routes results))))
+      (if *json?*
+        (display/print-json
+         {:routes  routes
+          :results (mapv (fn [{:keys [ip match prefix-str]}]
+                           {:ip     ip
+                            :match  match
+                            :prefix (when prefix-str
+                                      (Integer/parseInt (subs prefix-str 1)))})
+                         results)})
+        (display/print-lpm-result routes results))
+      (when (some #(nil? (:match %)) results)
+        (exit-empty!)))))
 
 (defn- handle-diff [before after]
   (when (empty? before) (die "diff requires CIDRs before '--'"))
@@ -152,19 +267,39 @@
                                     (map #(vector :added     %) added))
                             (sort-by (fn [[_ c]] (first (subnet/cidr->range c))))
                             vec)]
-    (display/print-diff-result before after added removed unchanged sorted-entries)))
+    (if *json?*
+      (display/print-json {:added added :removed removed :unchanged unchanged})
+      (display/print-diff-result before after added removed unchanged sorted-entries))
+    (when (and (empty? added) (empty? removed))
+      (exit-empty!))))
 
 (defn- handle-classify [inputs]
   (when (empty? inputs)
     (die "classify requires at least one IP or CIDR"))
   (let [classifications (mapv classify/classify inputs)]
-    (display/print-classify-result classifications)))
+    (if *json?*
+      (display/print-json
+       (mapv (fn [c]
+               {:input    (:input    c)
+                :category (display/category-label c)
+                :rfc      (:rfc      c)
+                :routable (:routable? c)
+                :spans    (:spans?   c)})
+             classifications))
+      (display/print-classify-result classifications))))
 
 (defn- emit-range-result! [start-ip start-n end-n]
   (when (> start-n end-n) (die "Start IP must be ≤ end IP"))
   (when (> end-n 0xFFFFFFFF) (die "End address exceeds 255.255.255.255"))
-  (display/print-range-result start-ip (ip/long->ip end-n)
-                              (subnet/range->cidrs start-n end-n)))
+  (let [end-ip (ip/long->ip end-n)
+        cidrs  (vec (subnet/range->cidrs start-n end-n))]
+    (if *json?*
+      (display/print-json {:start      start-ip
+                           :end        end-ip
+                           :total      (inc (- end-n start-n))
+                           :cidr_count (count cidrs)
+                           :cidrs      cidrs})
+      (display/print-range-result start-ip end-ip cidrs))))
 
 (defn- handle-range [[start-ip end-arg]]
   (when (nil? start-ip) (die "range requires a start IP and an end IP or +count"))
@@ -187,7 +322,77 @@
   (try (subnet/parse-cidr parent) (catch Exception e (die (ex-message e))))
   (doseq [a allocs]
     (try (subnet/parse-cidr a) (catch Exception e (die (ex-message e)))))
-  (display/print-util-result (ops/utilization-info parent allocs)))
+  (let [result (ops/utilization-info parent allocs)]
+    (if *json?*
+      (display/print-json
+       {:parent          (:cidr (:parent-info result))
+        :total_addresses (:total-addrs  result)
+        :used_addresses  (:used-addrs   result)
+        :free_addresses  (:free-addrs   result)
+        :pct_used        (:pct-used     result)
+        :fragmentation   (:fragmentation result)
+        :allocated       (mapv #(select-keys % [:cidr :hosts :mask]) (:alloc-infos result))
+        :free            (mapv #(select-keys % [:cidr :hosts :mask]) (:free-infos  result))})
+      (display/print-util-result result))))
+
+(defn- parse-mask-input
+  "Parses a mask input string into a prefix length, or returns nil on failure.
+  Accepts: dotted mask (255.255.0.0), plain integer (16), or slash-prefix (/16)."
+  [s]
+  (cond
+    (str/starts-with? s "/")
+    (let [n (parse-long-or-nil (subs s 1))]
+      (when (and n (<= 0 n 32)) n))
+    (str/includes? s ".")
+    (try (ip/mask->prefix (ip/ip->long s))
+         (catch Exception _ nil))
+    :else
+    (let [n (parse-long-or-nil s)]
+      (when (and n (<= 0 n 32)) n))))
+
+(defn- handle-adjacent [args direction]
+  (let [[cidr n-str] args
+        n-raw        (if (nil? n-str) 1 (parse-long-or-nil n-str))]
+    (when (nil? cidr)   (die (str direction " requires a CIDR")))
+    (when (nil? n-raw)  (die (str "Invalid step count: " n-str)))
+    (when (< n-raw 1)   (die "Step count must be ≥ 1"))
+    (when (> (count args) 2) (die (str direction " accepts at most one CIDR and one step count")))
+    (let [n      (if (= direction "prev") (- n-raw) n-raw)
+          result (subnet/adjacent-cidr cidr n)]
+      (if *json?*
+        (display/print-json {:input     cidr
+                             :direction direction
+                             :n         n-raw
+                             :result    result})
+        (display/print-adjacent-result cidr direction n-raw result)))))
+
+(defn- handle-mask [inputs]
+  (when (empty? inputs)
+    (die "mask requires at least one argument (dotted mask, /prefix, or prefix number)"))
+  (let [conversions
+        (mapv (fn [s]
+                (let [prefix (parse-mask-input s)]
+                  (when (nil? prefix)
+                    (die (str "Cannot parse mask input: " s)))
+                  {:input    s
+                   :prefix   prefix
+                   :mask     (ip/long->ip (ip/prefix->mask prefix))
+                   :wildcard (ip/long->ip (ip/wildcard-mask prefix))}))
+              inputs)]
+    (if *json?*
+      (display/print-json conversions)
+      (display/print-mask-result conversions))))
+
+(defn- handle-supernet [cidrs]
+  (when (< (count cidrs) 2)
+    (die "supernet requires at least two CIDRs"))
+  (doseq [c cidrs]
+    (try (subnet/parse-cidr c)
+         (catch Exception e (die (ex-message e)))))
+  (let [result (ops/supernet cidrs)]
+    (if *json?*
+      (display/print-json {:input (vec cidrs) :result result})
+      (display/print-supernet-result cidrs result))))
 
 (defn- handle-analyze [args]
   (let [text (cond
@@ -201,7 +406,44 @@
     (let [routes (ops/parse-routes text)]
       (when (empty? routes)
         (die "No valid CIDR routes found in input"))
-      (display/print-analyze-result (ops/analyze-routes routes)))))
+      (let [analysis (ops/analyze-routes routes)]
+        (if *json?*
+          (display/print-json
+           {:route_count      (:route-count      analysis)
+            :aggregated_count (:aggregated-count analysis)
+            :savings          (:savings          analysis)
+            :groups           (mapv (fn [{:keys [summary routes]}]
+                                      {:summary summary :routes routes})
+                                    (:groups analysis))
+            :contained        (mapv (fn [{:keys [a b type]}]
+                                      {:a a :b b :type (name type)})
+                                    (:contained analysis))})
+          (display/print-analyze-result analysis))
+        (when (and (zero? (:savings analysis))
+                   (empty? (:contained analysis)))
+          (exit-empty!))))))
+
+(defn- handle-allocate [[parent hosts-str & used]]
+  (when (nil? parent)    (die "allocate requires a parent CIDR and a host count"))
+  (when (nil? hosts-str) (die "allocate requires a host count"))
+  (when (str/includes? (str hosts-str) "/")
+    (die "allocate: second argument must be a host count, not a CIDR"))
+  (let [n (parse-long-or-nil hosts-str)]
+    (when (nil? n) (die (str "Invalid host count: " hosts-str)))
+    (when (< n 1)  (die "Host count must be ≥ 1"))
+    (try (subnet/parse-cidr parent) (catch Exception e (die (ex-message e))))
+    (doseq [c used]
+      (try (subnet/parse-cidr c) (catch Exception e (die (ex-message e)))))
+    (let [result (ops/next-available parent (vec used) n)]
+      (if result
+        (let [info (subnet/subnet-info result)]
+          (if *json?*
+            (display/print-json (assoc (info->json info)
+                                       :parent    parent
+                                       :used      (vec used)
+                                       :requested n))
+            (display/print-allocate-result parent (vec used) n info)))
+        (die (str "No available block for " n " hosts in " parent))))))
 
 (defn- handle-interactive-tree [[parent & extra]]
   (when (nil? parent) (die "tree requires a parent CIDR"))
@@ -210,6 +452,7 @@
 
 (def ^:private subcommands
   {"aggregate" handle-aggregate
+   "allocate"  handle-allocate
    "contains"  handle-contains
    "free"      handle-free
    "plan"      handle-plan
@@ -220,7 +463,11 @@
    "range"     handle-range
    "tree"      handle-interactive-tree
    "util"      handle-util
-   "analyze"   handle-analyze})
+   "analyze"   handle-analyze
+   "supernet"  handle-supernet
+   "mask"      handle-mask
+   "next"      #(handle-adjacent % "next")
+   "prev"      #(handle-adjacent % "prev")})
 
 (defn -main [& args]
   (let [argv     (vec args)
@@ -237,24 +484,38 @@
       (or (:help options) (empty? args))
       (do (println (usage summary)) (System/exit 0))
 
-      (:split options)
-      (do (when (nil? cmd) (die "usage: snetc <cidr> --split <prefix>"))
-          (try (handle-split cmd (:split options))
-               (catch Exception e (die (ex-message e)))))
-
-      (:tree options)
-      (do (when (nil? cmd) (die "usage: snetc <cidr> --tree <prefix>"))
-          (try (handle-tree cmd (:tree options))
-               (catch Exception e (die (ex-message e)))))
-
-      (and (nil? (subcommands cmd)) (str/includes? (str cmd) "/"))
-      (try (handle-info cmd)
-           (catch Exception e (die (ex-message e))))
-
       :else
-      (if-let [handler (subcommands cmd)]
-        (try (if (= cmd "diff")
-               (handler rest-args diff-rhs)
-               (handler rest-args))
-             (catch Exception e (die (ex-message e))))
-        (do (println (usage summary)) (System/exit 1))))))
+      (binding [*json?* (boolean (:json options))]
+        (cond
+          (:split options)
+          (do (when (nil? cmd) (die "usage: snetc <cidr> --split <prefix>"))
+              (try (handle-split cmd (:split options))
+                   (catch Exception e (die (ex-message e)))))
+
+          (:tree options)
+          (do (when (nil? cmd) (die "usage: snetc <cidr> --tree <prefix>"))
+              (try (handle-tree cmd (:tree options))
+                   (catch Exception e (die (ex-message e)))))
+
+          (and (nil? (subcommands cmd)) (str/includes? (str cmd) "/"))
+          (try (handle-info cmd :short? (:short options))
+               (catch Exception e (die (ex-message e))))
+
+          (and (nil? (subcommands cmd)) (subnet/valid-ip? (str cmd)))
+          (let [prefix (classful-prefix cmd)]
+            (if prefix
+              (let [net-addr (ip/long->ip (ip/network-addr (ip/ip->long cmd) prefix))
+                    cidr     (str net-addr "/" prefix)]
+                (when-not (or (:short options) *json?*)
+                  (println (str "# inferred /" prefix " (classful) from " cmd)))
+                (try (handle-info cidr :short? (:short options))
+                     (catch Exception e (die (ex-message e)))))
+              (die (str "Cannot infer classful prefix for " cmd " (class D/E or 0.x)"))))
+
+          :else
+          (if-let [handler (subcommands cmd)]
+            (try (if (= cmd "diff")
+                   (handler rest-args diff-rhs)
+                   (handler rest-args))
+                 (catch Exception e (die (ex-message e))))
+            (do (println (usage summary)) (System/exit 1))))))))

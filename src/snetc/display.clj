@@ -1,6 +1,7 @@
 (ns snetc.display
   "Terminal display: all human-readable output for snetc commands."
   (:require [clojure.string   :as str]
+            [clojure.data.json :as json]
             [snetc.ip         :as ip]
             [snetc.subnet     :as subnet]))
 
@@ -28,6 +29,19 @@
   (println (label-row "Subnet Mask"   (:mask       info)))
   (println (label-row "Wildcard Mask" (:wildcard   info)))
   (println))
+
+(defn print-subnet-info-json
+  "Prints subnet info as JSON to stdout."
+  [info]
+  (println (json/write-str (cond-> {:cidr       (:cidr      info)
+                                    :network    (:network   info)
+                                    :first_host (:first-host info)
+                                    :last_host  (:last-host  info)
+                                    :hosts      (:hosts     info)
+                                    :mask       (:mask      info)
+                                    :wildcard   (:wildcard  info)
+                                    :prefix     (:prefix    info)}
+                              (:broadcast info) (assoc :broadcast (:broadcast info))))))
 
 (defn print-split-table
   "Prints a table of subnets to stdout."
@@ -126,7 +140,7 @@
   (println (format "\n  Added: %d  Removed: %d  Unchanged: %d\n"
                    (count added) (count removed) (count unchanged))))
 
-(defn- category-label [{:keys [name spans? bcast-name category-path]}]
+(defn category-label [{:keys [name spans? bcast-name category-path]}]
   (if (seq category-path)
     (str/join " → " (map :name category-path))
     (str name (when spans? (str " → " bcast-name)))))
@@ -243,6 +257,57 @@
                             (format "  \u2192  %s  (%d \u2192 1)" summary n))]
               (println (format "    %-20s %s%s" r bracket (or suffix "")))))))))
   (println))
+
+(defn print-json
+  "Serialises data to a single JSON line on stdout."
+  [data]
+  (println (json/write-str data)))
+
+(defn print-allocate-result
+  "Prints the recommended CIDR allocation to stdout."
+  [parent used n info]
+  (println (format "\nAllocate %d host(s) in %s" n parent))
+  (when (seq used)
+    (println (format "  Excluding: %s" (str/join ", " used))))
+  (println)
+  (println (label-row "Allocated"   (:cidr       info)))
+  (println (label-row "First Host"  (:first-host info)))
+  (println (label-row "Last Host"   (:last-host  info)))
+  (println (label-row "Hosts"       (:hosts      info)))
+  (println (label-row "Subnet Mask" (:mask       info)))
+  (println))
+
+(defn print-subnet-info-short
+  "Prints a single terse summary line for info to stdout."
+  [info]
+  (println (format "%s  %s\u2013%s  %d hosts  mask %s"
+                   (:cidr      info)
+                   (:first-host info)
+                   (:last-host  info)
+                   (:hosts     info)
+                   (:mask      info))))
+
+(defn print-adjacent-result
+  "Prints an adjacent block result to stdout."
+  [input-cidr direction n result-cidr]
+  (println (format "\n%s  %s %d  =>  %s\n" input-cidr direction n result-cidr)))
+
+(defn print-mask-result
+  "Prints mask conversion results to stdout."
+  [conversions]
+  (println)
+  (doseq [{:keys [input prefix mask wildcard]} conversions]
+    (println (format "  %-18s  /%-4d  mask %-18s  wildcard %s"
+                     input prefix mask wildcard)))
+  (println))
+
+(defn print-supernet-result
+  "Prints the smallest covering CIDR for input-cidrs to stdout."
+  [input-cidrs result-cidr]
+  (println (format "\nSupernet of %d network(s):\n" (count input-cidrs)))
+  (doseq [c input-cidrs]
+    (println (str "  " c)))
+  (println (str "\n  => " result-cidr "\n")))
 
 (defn print-lpm-result
   "Prints longest-prefix-match results to stdout.
