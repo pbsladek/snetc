@@ -212,4 +212,20 @@
                       (plan/label-leaf "10.0.0.0/24" "test label"))
           root    (:root (plan/export-plan planner))
           lines   (#'tui/node->yaml-lines root 0)]
-      (is (some #(clojure.string/includes? % "test label") lines)))))
+      (is (some #(clojure.string/includes? % "test label") lines))))
+
+  (testing "node->yaml-lines escapes backslashes in labels"
+    (let [planner (-> (plan/new-plan "10.0.0.0/24")
+                      (plan/label-leaf "10.0.0.0/24" "C:\\network"))
+          root    (:root (plan/export-plan planner))
+          lines   (#'tui/node->yaml-lines root 0)
+          label-line (first (filter #(clojure.string/includes? % "label:") lines))]
+      (is (clojure.string/includes? label-line "C:\\\\network"))))
+
+  (testing "node->yaml-lines escapes double-quotes in labels"
+    (let [planner (-> (plan/new-plan "10.0.0.0/24")
+                      (plan/label-leaf "10.0.0.0/24" "say \"hello\""))
+          root    (:root (plan/export-plan planner))
+          lines   (#'tui/node->yaml-lines root 0)
+          label-line (first (filter #(clojure.string/includes? % "label:") lines))]
+      (is (clojure.string/includes? label-line "say \\\"hello\\\"")))))

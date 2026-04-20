@@ -31,10 +31,12 @@
     (.start ^ProcessBuilder pb)))
 
 (defn- sh-output [cmd]
-  (let [proc (start-shell cmd)
-        exit (.waitFor ^Process proc)
-        out (slurp (.getInputStream ^Process proc))
-        err (slurp (.getErrorStream ^Process proc))]
+  (let [proc  (start-shell cmd)
+        out-f (future (slurp (.getInputStream ^Process proc)))
+        err-f (future (slurp (.getErrorStream ^Process proc)))
+        exit  (.waitFor ^Process proc)
+        out   @out-f
+        err   @err-f]
     (when-not (zero? exit)
       (throw (ex-info (str "Command failed: " cmd "\n" (str/trim err))
                       {:cmd cmd :exit exit :err err})))
@@ -44,20 +46,29 @@
   [(parse-int-or (System/getenv "COLUMNS") default-width)
    (parse-int-or (System/getenv "LINES") default-height)])
 
+(def ^:private cached-size (atom [default-width default-height]))
+(def ^:private size-queried-at (atom 0))
+
 (defn- terminal-size []
-  (try
-    (let [[rows cols] (map #(parse-int-or % 0)
-                           (str/split (sh-output "stty size < /dev/tty") #"\s+"))]
-      (if (and (pos? rows) (pos? cols))
-        [cols rows]
-        (env-terminal-size)))
-    (catch Exception _
-      (env-terminal-size))))
+  (let [now (System/currentTimeMillis)]
+    (when (> (- now @size-queried-at) 2000)
+      (let [size (try
+                   (let [[rows cols] (map #(parse-int-or % 0)
+                                         (str/split (sh-output "stty size < /dev/tty") #"\s+"))]
+                     (if (and (pos? rows) (pos? cols))
+                       [cols rows]
+                       (env-terminal-size)))
+                   (catch Exception _
+                     (env-terminal-size)))]
+        (reset! cached-size size)
+        (reset! size-queried-at now)))
+    @cached-size))
 
 (defn- sh! [cmd]
-  (let [proc (start-shell cmd)
-        exit (.waitFor ^Process proc)
-        err (slurp (.getErrorStream ^Process proc))]
+  (let [proc  (start-shell cmd)
+        err-f (future (slurp (.getErrorStream ^Process proc)))
+        exit  (.waitFor ^Process proc)
+        err   @err-f]
     (when-not (zero? exit)
       (throw (ex-info (str "Command failed: " cmd "\n" (str/trim err))
                       {:cmd cmd :exit exit :err err})))))
@@ -69,7 +80,7 @@
   (sh! (str "stty " mode " < /dev/tty")))
 
 (defn- raw-mode! []
-  (sh! "stty raw -echo min 1 time 0 < /dev/tty"))
+  (sh! "stty raw -echo min 0 time 1 < /dev/tty"))
 
 (defn- enter-screen! []
   (print "\u001b[?1049h\u001b[?25l\u001b[?7l")
@@ -80,21 +91,28 @@
   (flush))
 
 (defn- read-escape [^FileInputStream in]
-  (let [b1 (.read in)
-        b2 (.read in)]
-    (case [b1 b2]
-      [91 65] :up
-      [91 66] :down
-      [91 67] :right
-      [91 68] :left
-      [79 65] :up
-      [79 66] :down
-      :escape)))
+  (let [b1 (.read in)]
+    (if (= -1 b1)
+      :escape
+      (let [b2 (.read in)]
+        (if (= -1 b2)
+          :escape
+          (case [b1 b2]
+            [91 65] :up   [91 66] :down
+            [91 67] :right [91 68] :left
+            [79 65] :up   [79 66] :down
+            (do
+              (when (= b1 91)
+                (loop []
+                  (let [b (.read in)]
+                    (when (and (not= -1 b) (< b 64))
+                      (recur)))))
+              :escape)))))))
 
 (defn- read-key [^FileInputStream in]
   (let [b (.read in)]
     (case b
-      -1 :eof
+      -1 :timeout
       3 :quit
       8 :join
       9 :down
@@ -153,7 +171,7 @@
 
 (defn- prompt-line [saved-mode prompt]
   (set-terminal-mode! saved-mode)
-  (print "\u001b[?25h\r\n" prompt)
+  (print (str "\u001b[?25h\r\n" prompt))
   (flush)
   (try
     (with-open [reader (BufferedReader. (InputStreamReader. (FileInputStream. "/dev/tty")))]
@@ -209,7 +227,14 @@
 (defn- node->yaml-lines [node indent]
   (let [pad (apply str (repeat indent " "))
         label-val (if (:label node)
-                    (str "\"" (str/replace (:label node) "\"" "\\\"") "\"")
+                    (str "\""
+                         (-> (:label node)
+                             (str/replace "\\" "\\\\")
+                             (str/replace "\"" "\\\"")
+                             (str/replace "\n" "\\n")
+                             (str/replace "\r" "\\r")
+                             (str/replace "\t" "\\t"))
+                         "\"")
                     "null")]
     (into [(str pad "cidr: " (:cidr node))
            (str pad "label: " label-val)]
@@ -276,6 +301,8 @@
   "Runs the interactive subnet planner for parent-cidr.
   Returns the final plan when the user quits."
   [parent-cidr]
+  (when (= "dumb" (System/getenv "TERM"))
+    (throw (ex-info "snetc tree requires a colour terminal (TERM=dumb detected)" {})))
   (let [planner (plan/new-plan parent-cidr)
         saved-mode (terminal-mode)]
     (with-open [tty-in (FileInputStream. "/dev/tty")]
@@ -287,7 +314,7 @@
             (print (render/render state width height))
             (flush)
             (let [key (read-key tty-in)]
-              (if (#{:quit :eof} key)
+              (if (#{:quit} key)
                 (:plan state)
                 (recur (handle-key state key saved-mode))))))
         (finally

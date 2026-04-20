@@ -727,3 +727,16 @@
     (let [o (run-main "--json" "diff" "10.0.0.0/25" "--" "10.0.0.128/25")
           data (json/read-str o :key-fn keyword)]
       (is (= ["10.0.0.128/25"] (:added data))))))
+
+(deftest adjacent-step-overflow-test
+  (testing "next rejects step count larger than IPv4 address space"
+    (is (dies-with? #(#'core/handle-adjacent ["10.0.0.0/24" "4294967296"] "next")
+                    #"exceeds IPv4")))
+
+  (testing "prev rejects step count larger than IPv4 address space"
+    (is (dies-with? #(#'core/handle-adjacent ["10.0.0.0/24" "4294967296"] "prev")
+                    #"exceeds IPv4")))
+
+  (testing "next rejects step that overflows address space"
+    (is (dies-with? #(run-main "next" "10.0.0.0/24" "4294967295")
+                    #"outside valid IPv4"))))

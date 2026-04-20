@@ -365,6 +365,7 @@
     (when (nil? cidr)          (die (str direction " requires a CIDR")))
     (when (nil? n-raw)         (die (str "Invalid step count: " n-str)))
     (when (< n-raw 1)          (die "Step count must be ≥ 1"))
+    (when (> n-raw 0xFFFFFFFF) (die "Step count exceeds IPv4 address space"))
     (when (> (count args) 2)   (die (str direction " accepts at most one CIDR and one step count")))
     (let [n      (if (= direction "prev") (- n-raw) n-raw)
           result (subnet/adjacent-cidr cidr n)]
