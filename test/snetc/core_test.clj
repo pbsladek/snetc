@@ -29,8 +29,8 @@
     (is (dies-with? #(#'core/handle-overlaps []) #"overlaps requires"))
     (is (dies-with? #(#'core/handle-overlaps ["10.0.0.0/24"]) #"overlaps requires")))
 
-  (testing "free requires at least one allocated CIDR"
-    (is (dies-with? #(#'core/handle-free ["10.0.0.0/24"]) #"free requires")))
+  (testing "free with no parent dies"
+    (is (dies-with? #(with-out-str (#'core/handle-free [])) #"free requires a parent")))
 
   (testing "interactive tree requires exactly one parent CIDR"
     (is (dies-with? #(#'core/handle-interactive-tree []) #"tree requires"))
@@ -656,3 +656,74 @@
   (testing "handler exception is caught and rethrown via die"
     (is (thrown? clojure.lang.ExceptionInfo
                  (run-main "info" "notacidr")))))
+
+;;; ── improvement tests ────────────────────────────────────────────────────────
+
+(deftest free-no-allocations-test
+  (testing "free with no allocations shows entire parent as free (text)"
+    (let [o (with-out-str (#'core/handle-free ["10.0.0.0/24"]))]
+      (is (clojure.string/includes? o "10.0.0.0/24"))
+      (is (not (clojure.string/includes? o "excluding")))))
+
+  (testing "free with no allocations JSON returns allocated_count 0 and full parent free"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-free ["10.0.0.0/24"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 0 (:allocated_count data)))
+      (is (= 1 (:free_count data)))
+      (is (= "10.0.0.0/24" (-> data :free first :cidr))))))
+
+(deftest util-json-fields-test
+  (testing "--json includes pct_free and largest_free"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-util ["10.0.0.0/24" "10.0.0.0/26" "10.0.0.128/26"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 50 (:pct_used data)))
+      (is (= 50 (:pct_free data)))
+      (is (string? (:largest_free data)))))
+
+  (testing "pct_used + pct_free = 100"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-util ["10.0.0.0/24" "10.0.0.0/25"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 100 (+ (:pct_used data) (:pct_free data))))))
+
+  (testing "largest_free is nil when fully allocated"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-util ["10.0.0.0/30" "10.0.0.0/30"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (nil? (:largest_free data))))))
+
+(deftest analyze-containment-json-test
+  (testing "contained entries use container/contained keys not a/b/type"
+    (let [out  (with-out-str
+                 (with-in-str "10.0.0.0/24\n10.0.0.0/25\n"
+                   (binding [core/*json?* true]
+                     (#'core/handle-analyze []))))
+          data (json/read-str out :key-fn keyword)
+          item (first (:contained data))]
+      (is (= "10.0.0.0/24" (:container item)))
+      (is (= "10.0.0.0/25" (:contained item)))
+      (is (nil? (:type item)))))
+
+  (testing "b-contains-a containment is normalised the same way"
+    (let [out  (with-out-str
+                 (with-in-str "10.0.0.0/25\n10.0.0.0/24\n"
+                   (binding [core/*json?* true]
+                     (#'core/handle-analyze []))))
+          data (json/read-str out :key-fn keyword)
+          item (first (:contained data))]
+      (is (= "10.0.0.0/24" (:container item)))
+      (is (= "10.0.0.0/25" (:contained item))))))
+
+(deftest diff-trailing-json-test
+  (testing "diff --json placed after -- is picked up by -main"
+    (let [o (run-main "diff" "10.0.0.0/25" "--" "10.0.0.0/25" "10.0.0.128/25" "--json")
+          data (json/read-str o :key-fn keyword)]
+      (is (= ["10.0.0.128/25"] (:added data)))
+      (is (= [] (:removed data)))))
+
+  (testing "diff --json before -- still works"
+    (let [o (run-main "--json" "diff" "10.0.0.0/25" "--" "10.0.0.128/25")
+          data (json/read-str o :key-fn keyword)]
+      (is (= ["10.0.0.128/25"] (:added data))))))

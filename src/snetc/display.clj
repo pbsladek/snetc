@@ -118,7 +118,9 @@
   result-infos is a seq of pre-computed subnet-info maps."
   [parent-cidr allocated-cidrs result-infos]
   (println (str "\nFree space in " parent-cidr
-                " (excluding " (count allocated-cidrs) " allocated block(s)):\n"))
+                (when (seq allocated-cidrs)
+                  (str " (excluding " (count allocated-cidrs) " allocated block(s))"))
+                ":\n"))
   (if (empty? result-infos)
     (println "  (none – fully allocated)\n")
     (let [fmt "  %-20s %-18s %s"]

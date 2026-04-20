@@ -191,20 +191,18 @@
 
 (defn- handle-free [[parent & alloc-args]]
   (when (nil? parent) (die "free requires a parent CIDR"))
-  (let [allocated (if (seq alloc-args) alloc-args (read-stdin-lines))]
-    (when (empty? allocated)
-      (die "free requires at least one allocated CIDR (or CIDRs on stdin)"))
-    (let [free-cidrs (ops/free-space parent allocated)
-          free-infos (mapv subnet/subnet-info free-cidrs)]
-      (if *json?*
-        (display/print-json {:parent          parent
-                             :allocated_count (count allocated)
-                             :free_count      (count free-infos)
-                             :free            (mapv #(select-keys % [:cidr :hosts :mask])
-                                                    free-infos)})
-        (display/print-free-result parent allocated free-infos))
-      (when (empty? free-infos)
-        (exit-empty!)))))
+  (let [allocated  (if (seq alloc-args) alloc-args (read-stdin-lines))
+        free-cidrs (ops/free-space parent allocated)
+        free-infos (mapv subnet/subnet-info free-cidrs)]
+    (if *json?*
+      (display/print-json {:parent          parent
+                           :allocated_count (count allocated)
+                           :free_count      (count free-infos)
+                           :free            (mapv #(select-keys % [:cidr :hosts :mask])
+                                                  free-infos)})
+      (display/print-free-result parent allocated free-infos))
+    (when (empty? free-infos)
+      (exit-empty!))))
 
 (defn- handle-plan [[parent & host-strs]]
   (when (nil? parent)      (die "plan requires a parent CIDR and at least one host count"))
@@ -340,6 +338,8 @@
         :used_addresses  (:used-addrs   result)
         :free_addresses  (:free-addrs   result)
         :pct_used        (:pct-used     result)
+        :pct_free        (- 100 (:pct-used result))
+        :largest_free    (some-> (:largest-free result) :cidr)
         :fragmentation   (:fragmentation result)
         :allocated       (mapv #(select-keys % [:cidr :hosts :mask]) (:alloc-infos result))
         :free            (mapv #(select-keys % [:cidr :hosts :mask]) (:free-infos  result))})
@@ -421,7 +421,9 @@
                                       {:summary summary :routes routes})
                                     (:groups analysis))
             :contained        (mapv (fn [{:keys [a b type]}]
-                                      {:a a :b b :type (name type)})
+                                      (if (= type :a-contains-b)
+                                        {:container a :contained b}
+                                        {:container b :contained a}))
                                     (:contained analysis))})
           (display/print-analyze-result analysis))
         (when (and (zero? (:savings analysis))
@@ -574,10 +576,12 @@
   (assoc subcommands "batch" handle-batch))
 
 (defn -main [& args]
-  (let [argv     (vec args)
-        sep-idx  (index-of argv "--")
-        pre-args (if (not= sep-idx -1) (subvec argv 0 sep-idx) argv)
-        diff-rhs (when (>= sep-idx 0) (subvec argv (inc sep-idx)))
+  (let [argv           (vec args)
+        sep-idx        (index-of argv "--")
+        pre-args       (if (not= sep-idx -1) (subvec argv 0 sep-idx) argv)
+        raw-rhs        (when (>= sep-idx 0) (subvec argv (inc sep-idx)))
+        trailing-json? (boolean (some #{"--json"} (or raw-rhs [])))
+        diff-rhs       (when raw-rhs (filterv #(not= "--json" %) raw-rhs))
         {:keys [options arguments errors summary]} (parse-opts pre-args cli-options)
         [cmd & rest-args] arguments]
     (cond
@@ -589,7 +593,7 @@
       (do (println (usage summary)) (System/exit 0))
 
       :else
-      (binding [*json?* (boolean (:json options))]
+      (binding [*json?* (boolean (or (:json options) trailing-json?))]
         (cond
           (:split options)
           (do (when (nil? cmd) (die "usage: snetc <cidr> --split <prefix>"))
