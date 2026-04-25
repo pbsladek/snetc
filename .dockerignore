@@ -1,0 +1,16 @@
+.git
+.github
+.clj-kondo
+.cpcache
+.lsp
+target
+dist
+docs
+test
+*.md
+*.json
+*.yaml
+*.yml
+!deps.edn
+!build.clj
+!src/**

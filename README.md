@@ -48,6 +48,24 @@ To run without compiling:
 make run ARGS="192.168.0.0/22"
 ```
 
+### Container image
+
+The Docker image builds `snetc` as a GraalVM native executable and runs it from a Docker Hardened Images static runtime (`dhi.io/static:20250419-glibc-debian13`).
+
+```sh
+docker run --rm pwbsladek/snetc:latest 192.168.0.0/22
+docker run --rm pwbsladek/snetc:latest classify 10.0.0.1 8.8.8.8
+```
+
+Build and push a tagged image locally:
+
+```sh
+make container-build TAG=tagname
+make container-push TAG=tagname
+```
+
+Tagged releases publish multi-architecture images to Docker Hub as `pwbsladek/snetc:<git-tag>`, `pwbsladek/snetc:<version-without-v>`, and `pwbsladek/snetc:latest`. The workflow expects `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; set `DHI_USERNAME` and `DHI_TOKEN` too if your Docker Hardened Images access uses separate credentials.
+
 ## Usage
 
 ```
