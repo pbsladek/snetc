@@ -94,7 +94,37 @@
       (is (= 1 (:selected after)))))
 
   (testing "selection is clamped at 0 when moving up from top"
-    (is (= 0 (:selected (press base-state :up))))))
+    (is (= 0 (:selected (press base-state :up)))))
+
+  (testing "g/G jump to first and last visible rows"
+    (let [state (press base-state :split)]
+      (is (= 1 (:selected (press state :last))))
+      (is (= 0 (:selected (press (press state :last) :first))))))
+
+  (testing "page up/down moves by viewport height when available"
+    (let [state (assoc (press base-state :split)
+                       :last-frame {:lines (vec (repeat 9 ""))})
+          at-end (press state :page-down)]
+      (is (= 1 (:selected at-end)))
+      (is (= 0 (:selected (press at-end :page-up)))))))
+
+(deftest cached-row-state-test
+  (testing "plan-changing keys refresh cached rows"
+    (let [after (press base-state :split)]
+      (is (= 2 (count (:rows after))))
+      (is (= ["10.0.0.0/25" "10.0.0.128/25"]
+             (mapv :cidr (:rows after))))))
+
+  (testing "cached rows are used for selection"
+    (let [state {:plan (plan/new-plan "10.0.0.0/24")
+                 :rows [{:idx 1 :cidr "10.0.0.0/25"}
+                        {:idx 2 :cidr "10.0.0.128/25"}]
+                 :selected 0
+                 :scroll 0
+                 :message "Ready"}
+          after (press state :down)]
+      (is (= 1 (:selected after)))
+      (is (= "10.0.0.128/25" (:cursor (:plan after)))))))
 
 (deftest undo-redo-keys-test
   (testing "undo reverses a split"
@@ -118,6 +148,198 @@
   (testing "unhandled keys return state unchanged"
     (let [result (press base-state :eof)]
       (is (= base-state result)))))
+
+(deftest terminal-adapter-test
+  (testing "label prompt can be injected without touching /dev/tty"
+    (let [state (assoc base-state
+                       :terminal {:prompt (fn [_saved-mode _prompt] "edge")})
+          result (press state :label)]
+      (is (= "edge" (:label (plan/find-node (:plan result) "10.0.0.0/24"))))
+      (is (= "edge" (:label (first (:rows result)))))))
+
+  (testing "print-cidrs writer can be injected"
+    (let [called (atom nil)
+          state (assoc base-state
+                       :terminal {:write-leaf-cidrs (fn [planner]
+                                                      (reset! called (plan/leaf-cidrs planner))
+                                                      "memory://leaves")})
+          result (press state :print-cidrs)]
+      (is (= ["10.0.0.0/24"] @called))
+      (is (clojure.string/includes? (:message result) "memory://leaves")))))
+
+(deftest search-filter-and-command-test
+  (testing "filter narrows selectable rows"
+    (let [state (-> base-state
+                    (press :split)
+                    (assoc :terminal {:prompt (fn [_ _] "10.0.0.128")}))
+          result (press state :filter)]
+      (is (= "10.0.0.128/25" (:cursor (:plan result))))
+      (is (clojure.string/includes? (:message result) "1 row"))))
+
+  (testing "search selects by IP containment"
+    (let [state (-> base-state
+                    (press :split)
+                    (assoc :terminal {:prompt (fn [_ _] "10.0.0.200")}))
+          result (press state :jump)]
+      (is (= "10.0.0.128/25" (:cursor (:plan result))))))
+
+  (testing "command palette can split by prefix and clear filters"
+    (let [prompts (atom ["split /26" "filter 10.0.0.64" "clear"])
+          state (assoc base-state :terminal {:prompt (fn [_ _]
+                                                       (let [v (first @prompts)]
+                                                         (swap! prompts rest)
+                                                         v))})
+          split-state (press state :command)
+          filtered-state (press split-state :command)
+          cleared-state (press filtered-state :command)]
+      (is (= 4 (count (plan/leaf-cidrs (:plan split-state)))))
+      (is (= "10.0.0.64/26" (:cursor (:plan filtered-state))))
+      (is (nil? (:filter cleared-state)))))
+
+  (testing "escape clears an active filter"
+    (let [state (-> base-state
+                    (press :split)
+                    (assoc :terminal {:prompt (fn [_ _] "10.0.0.128")})
+                    (press :filter))
+          cleared (press state :escape)]
+      (is (nil? (:filter cleared)))
+      (is (clojure.string/includes? (:message cleared) "cleared"))))
+
+  (testing "query aliases match prefix and label"
+    (let [state (-> base-state
+                    (press :split)
+                    (assoc :terminal {:prompt (fn [_ _] "edge")}))
+          labeled (assoc (press state :label)
+                         :terminal {:prompt (fn [_ _] "@edge")})
+          by-label (press labeled :filter)
+          by-prefix (press (assoc labeled :terminal {:prompt (fn [_ _] "/25")}) :filter)]
+      (is (= "10.0.0.0/25" (:cursor (:plan by-label))))
+      (is (clojure.string/includes? (:message by-prefix) "2 row"))))
+
+  (testing "command aliases and help work"
+    (let [prompts (atom ["s /26" "h 62" "f /26" "x" "?"])
+          state (assoc base-state :terminal {:prompt (fn [_ _]
+                                                       (let [v (first @prompts)]
+                                                         (swap! prompts rest)
+                                                         v))})
+          split-state (press state :command)
+          hosts-state (press split-state :command)
+          filtered-state (press hosts-state :command)
+          cleared-state (press filtered-state :command)
+          help-state (press cleared-state :command)]
+      (is (= 4 (count (plan/leaf-cidrs (:plan split-state)))))
+      (is (string? (:message hosts-state)))
+      (is (some? (:filter filtered-state)))
+      (is (nil? (:filter cleared-state)))
+      (is (clojure.string/includes? (:message help-state) "Commands:")))))
+
+(deftest bulk-operation-key-test
+  (testing "split-to-prefix key recursively splits selected subnet"
+    (let [state (assoc base-state :terminal {:prompt (fn [_ _] "/26")})
+          result (press state :split-to-prefix)]
+      (is (= ["10.0.0.0/26" "10.0.0.64/26" "10.0.0.128/26" "10.0.0.192/26"]
+             (plan/leaf-cidrs (:plan result))))))
+
+  (testing "split-hosts key chooses a tight fitting prefix"
+    (let [state (assoc base-state :terminal {:prompt (fn [_ _] "62")})
+          result (press state :split-hosts)]
+      (is (= ["10.0.0.0/26" "10.0.0.64/26" "10.0.0.128/26" "10.0.0.192/26"]
+             (plan/leaf-cidrs (:plan result)))))))
+
+(deftest import-key-test
+  (testing "import reads a plan through the terminal adapter"
+    (let [imported (-> (plan/new-plan "10.0.0.0/24")
+                       (plan/split-leaf "10.0.0.0/24"))
+          state (assoc base-state
+                       :terminal {:prompt (fn [_ _] "memory://plan.edn")
+                                  :read-plan (fn [_] imported)})
+          result (press state :import)]
+      (is (= ["10.0.0.0/25" "10.0.0.128/25"]
+             (plan/leaf-cidrs (:plan result))))
+      (is (clojure.string/includes? (:message result) "Imported"))))
+
+  (testing "import errors distinguish missing files"
+    (let [result (#'tui/import-plan-path base-state "/tmp/snetc-missing-plan.edn")]
+      (is (clojure.string/includes? (:message result) "not found")))))
+
+(deftest export-and-selected-output-test
+  (testing "command export accepts an explicit path"
+    (let [called (atom nil)
+          state (assoc base-state
+                       :terminal {:prompt (fn [_ _] "export json /tmp/custom.json")
+                                  :write-json-plan-to (fn [_ path]
+                                                        (reset! called path)
+                                                        path)})
+          result (press state :command)]
+      (is (= "/tmp/custom.json" @called))
+      (is (clojure.string/includes? (:message result) "/tmp/custom.json"))))
+
+  (testing "print-selected writes selected CIDR through the adapter"
+    (let [called (atom nil)
+          state (assoc base-state
+                       :terminal {:prompt (fn [_ _] "print-selected")
+                                  :write-selected-cidr (fn [row]
+                                                         (reset! called (:cidr row))
+                                                         "memory://selected")})
+          result (press state :command)]
+      (is (= "10.0.0.0/24" @called))
+      (is (clojure.string/includes? (:message result) "memory://selected")))))
+
+(deftest bulk-confirmation-test
+  (testing "large bulk split can be cancelled before expansion"
+    (let [prompts (atom ["/32" "no"])
+          state (assoc {:plan (plan/new-plan "10.0.0.0/16")
+                        :selected 0
+                        :scroll 0
+                        :message "Ready"}
+                       :terminal {:prompt (fn [_ _]
+                                            (let [v (first @prompts)]
+                                              (swap! prompts rest)
+                                              v))})
+          result (press state :split-to-prefix)]
+      (is (= ["10.0.0.0/16"] (plan/leaf-cidrs (:plan result))))
+      (is (= "Split cancelled" (:message result))))))
+
+(deftest injected-run-loop-test
+  (testing "run-tree! can be driven with an injected terminal adapter"
+    (when-not (= "dumb" (System/getenv "TERM"))
+      (let [events (atom [])
+            final-plan (with-out-str
+                         (let [result (tui/run-tree!
+                                      "10.0.0.0/24"
+                                      {:terminal-mode (fn [] "saved")
+                                       :set-terminal-mode! #(swap! events conj [:restore %])
+                                       :raw-mode! #(swap! events conj :raw)
+                                       :enter-screen! #(swap! events conj :enter)
+                                       :leave-screen! #(swap! events conj :leave)
+                                       :terminal-size (fn [] [80 12])
+                                       :open-input (fn [] (java.io.ByteArrayInputStream. (byte-array 0)))
+                                       :read-key (fn [_in] :quit)})]
+                           (is (= ["10.0.0.0/24"] (plan/leaf-cidrs result)))))]
+        (is (string? final-plan))
+        (is (= [:enter :raw [:restore "saved"] :leave] @events)))))
+
+  (testing "second loop render uses diff output instead of full clear"
+    (when-not (= "dumb" (System/getenv "TERM"))
+      (let [keys (atom [:timeout :quit])
+            writes (atom [])]
+        (tui/run-tree!
+         "10.0.0.0/24"
+         {:terminal-mode (fn [] "saved")
+          :set-terminal-mode! (fn [_])
+          :raw-mode! (fn [])
+          :enter-screen! (fn [])
+          :leave-screen! (fn [])
+          :terminal-size (fn [] [80 12])
+          :open-input (fn [] (java.io.ByteArrayInputStream. (byte-array 0)))
+          :read-key (fn [_in]
+                      (let [k (first @keys)]
+                        (swap! keys rest)
+                        k))
+          :write! #(swap! writes conj %)})
+        (is (= 2 (count @writes)))
+        (is (clojure.string/includes? (first @writes) "\u001b[2J"))
+        (is (not (clojure.string/includes? (second @writes) "\u001b[2J")))))))
 
 (deftest apply-plan-op-error-test
   (testing "splitting a /32 leaf sets an error message"
@@ -162,6 +384,16 @@
 
   (testing "returns -1 when needle is not found"
     (is (= -1 (#'tui/index-of [:a :b :c] :z)))))
+
+(deftest read-key-test
+  (testing "escape sequences map page keys and bare escape"
+    (is (= :escape (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [27])))))
+    (is (= :page-up (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [27 91 53 126])))))
+    (is (= :page-down (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [27 91 54 126]))))))
+
+  (testing "letter keys map first/last navigation"
+    (is (= :first (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [(byte 103)])))))
+    (is (= :last (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [(byte 71)])))))))
 
 ;;; ── write functions and YAML generation ─────────────────────────────────────
 

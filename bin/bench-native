@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BIN="${1:-dist/snetc}"
+RUNS="${SNETC_BENCH_RUNS:-10}"
+WARMUP="${SNETC_BENCH_WARMUP:-2}"
+OUT_DIR="${SNETC_BENCH_OUT:-target/bench}"
+
+if [[ ! -x "$BIN" ]]; then
+  echo "native bench: executable not found: $BIN" >&2
+  exit 1
+fi
+
+mkdir -p "$OUT_DIR"
+
+routes_file="$(mktemp "${TMPDIR:-/tmp}/snetc-routes.XXXXXX")"
+overlaps_file="$(mktemp "${TMPDIR:-/tmp}/snetc-overlaps.XXXXXX")"
+trap 'rm -f "$routes_file" "$overlaps_file"' EXIT
+
+for i in $(seq 0 255); do
+  printf '10.%d.0.0/16\n' "$i"
+done > "$routes_file"
+
+{
+  printf '10.0.0.0/8\n'
+  cat "$routes_file"
+} > "$overlaps_file"
+
+echo "native bench: $BIN"
+echo "runs=$RUNS warmup=$WARMUP"
+
+if command -v hyperfine >/dev/null 2>&1; then
+  hyperfine \
+    --warmup "$WARMUP" \
+    --runs "$RUNS" \
+    --export-json "$OUT_DIR/native-bench.json" \
+    "$BIN 10.0.0.0/24 --json >/dev/null" \
+    "$BIN 10.0.0.0/16 --tree 24 >/dev/null" \
+    "$BIN aggregate < $routes_file >/dev/null" \
+    "$BIN overlaps < $overlaps_file >/dev/null"
+  echo "native bench json: $OUT_DIR/native-bench.json"
+else
+  echo "hyperfine not found; using /usr/bin/time fallback"
+  for name in info tree aggregate overlaps; do
+    case "$name" in
+      info) cmd=( "$BIN" "10.0.0.0/24" "--json" ) ;;
+      tree) cmd=( "$BIN" "10.0.0.0/16" "--tree" "24" ) ;;
+      aggregate) cmd=( "$BIN" "aggregate" ) ;;
+      overlaps) cmd=( "$BIN" "overlaps" ) ;;
+    esac
+
+    for run in $(seq 1 "$RUNS"); do
+      case "$name" in
+        aggregate) /usr/bin/time -p "${cmd[@]}" < "$routes_file" >/dev/null ;;
+        overlaps) /usr/bin/time -p "${cmd[@]}" < "$overlaps_file" >/dev/null ;;
+        *) /usr/bin/time -p "${cmd[@]}" >/dev/null ;;
+      esac 2>> "$OUT_DIR/native-bench.time"
+      echo "$name run $run" >> "$OUT_DIR/native-bench.time"
+    done
+  done
+  echo "native bench time log: $OUT_DIR/native-bench.time"
+fi

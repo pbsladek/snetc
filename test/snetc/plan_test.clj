@@ -105,6 +105,30 @@
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cannot split /32"
                           (plan/split-once "10.0.0.1/32")))))
 
+(deftest bulk-plan-ops-test
+  (testing "split-leaf-to-prefix recursively splits a leaf"
+    (let [planner (plan/split-leaf-to-prefix (plan/new-plan "10.0.0.0/24")
+                                             "10.0.0.0/24"
+                                             26)]
+      (is (= ["10.0.0.0/26" "10.0.0.64/26" "10.0.0.128/26" "10.0.0.192/26"]
+             (plan/leaf-cidrs planner)))
+      (is (= 1 (count (:undo planner))))
+      (is (= ["10.0.0.0/24"] (plan/leaf-cidrs (plan/undo planner))))
+      (is (true? (plan/validate-plan planner)))))
+
+  (testing "split-leaf-for-hosts chooses the tightest host-fitting prefix"
+    (let [planner (plan/split-leaf-for-hosts (plan/new-plan "10.0.0.0/24")
+                                             "10.0.0.0/24"
+                                             62)]
+      (is (= ["10.0.0.0/26" "10.0.0.64/26" "10.0.0.128/26" "10.0.0.192/26"]
+             (plan/leaf-cidrs planner)))))
+
+  (testing "join-leaf-to-prefix joins upward through sibling leaves"
+    (let [planner (-> (plan/new-plan "10.0.0.0/24")
+                      (plan/split-leaf-to-prefix "10.0.0.0/24" 25)
+                      (plan/join-leaf-to-prefix "10.0.0.0/25" 24))]
+      (is (= ["10.0.0.0/24"] (plan/leaf-cidrs planner))))))
+
 (deftest plan-error-paths-test
   (testing "join-leaf throws when cidr cannot be joined"
     (let [planner (plan/new-plan "10.0.0.0/24")]

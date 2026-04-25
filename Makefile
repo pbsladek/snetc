@@ -1,9 +1,17 @@
-.PHONY: run run-dist test spec build native clean container-build container-run release changelog
+.PHONY: run run-dist test spec build native native-smoke bench bench-native clean container-build container-run release changelog
 
 JAR          := target/snetc-0.1.0.jar
 BINARY       := dist/snetc
-GRAALVM_HOME ?= /Library/Java/JavaVirtualMachines/graalvm-25.jdk/Contents/Home
-NATIVE_IMAGE ?= $(GRAALVM_HOME)/bin/native-image
+NATIVE_TMP   ?= target/native-tmp
+GRAALVM_HOME ?=
+NATIVE_IMAGE ?= $(shell \
+	if [ -n "$(GRAALVM_HOME)" ] && [ -x "$(GRAALVM_HOME)/bin/native-image" ]; then \
+		echo "$(GRAALVM_HOME)/bin/native-image"; \
+	elif [ -n "$$JAVA_HOME" ] && [ -x "$$JAVA_HOME/bin/native-image" ]; then \
+		echo "$$JAVA_HOME/bin/native-image"; \
+	else \
+		command -v native-image 2>/dev/null || echo native-image; \
+	fi)
 IMAGE        ?= snetc
 CTR          ?= $(shell command -v podman 2>/dev/null || echo docker)
 BUILD_INPUTS := deps.edn build.clj $(shell find src -type f)
@@ -34,11 +42,21 @@ $(JAR): $(BUILD_INPUTS)
 
 native: $(BINARY)
 
-$(BINARY): $(JAR)
-	mkdir -p dist
+native-smoke: $(BINARY)
+	bin/smoke-native $(BINARY)
+
+bench:
+	clojure -M -m snetc.perf-bench
+
+bench-native: $(BINARY)
+	bin/bench-native $(BINARY)
+
+$(BINARY): $(JAR) Makefile bin/smoke-native bin/bench-native
+	mkdir -p dist $(NATIVE_TMP)
 	$(NATIVE_IMAGE) \
 		-jar $(JAR) \
 		-o $(BINARY) \
+		-J-Djava.io.tmpdir=$(abspath $(NATIVE_TMP)) \
 		--initialize-at-build-time \
 		--no-fallback \
 		-H:+ReportExceptionStackTraces

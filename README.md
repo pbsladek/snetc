@@ -36,6 +36,9 @@ sudo mv snetc-linux-amd64 /usr/local/bin/snetc
 git clone https://github.com/pbsladek/snetc.git
 cd snetc
 make native          # compiles → dist/snetc
+make native-smoke    # optional: smoke-tests the native binary
+make bench           # optional: pure ops/TUI timing probes
+make bench-native    # optional: native CLI timing probes
 sudo cp dist/snetc /usr/local/bin/snetc
 ```
 

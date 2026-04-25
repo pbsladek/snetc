@@ -27,6 +27,17 @@ jobs:
       - name: Run tests
         run: bin/kaocha
 
+      - name: Run performance probes
+        run: |
+          mkdir -p target/bench
+          make bench > target/bench/perf-bench.edn
+
+      - name: Upload performance probe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-bench-${{ runner.os }}
+          path: target/bench/perf-bench.edn
+
       - name: Generate coverage
         run: bin/kaocha --plugin kaocha.plugin/cloverage --codecov
 
@@ -35,3 +46,41 @@ jobs:
         with:
           files: target/coverage/codecov.json
           fail_ci_if_error: false
+
+  native-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+
+      - name: Install Clojure
+        uses: DeLaGuardo/setup-clojure@13
+        with:
+          cli: latest
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('deps.edn') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: Build and smoke test native binary
+        run: make native-smoke
+
+      - name: Benchmark native binary
+        env:
+          SNETC_BENCH_RUNS: 3
+          SNETC_BENCH_WARMUP: 1
+        run: make bench-native
+
+      - name: Upload native benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-bench-${{ runner.os }}
+          path: target/bench
