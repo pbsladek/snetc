@@ -108,6 +108,19 @@
       (for [i (range n)]
         (subnet-info (str (ip/long->ip (+ net (* i size))) "/" new-prefix))))))
 
+(defn adjacent-cidr
+  "Returns the CIDR n blocks after (positive n) or before (negative n) cidr.
+  Throws ex-info if the result would fall outside 0.0.0.0–255.255.255.255."
+  [cidr n]
+  (let [{:keys [ip-str prefix]} (parse-cidr cidr)
+        net   (ip/network-addr (ip/ip->long ip-str) prefix)
+        size  (bit-shift-left 1 (- 32 prefix))
+        shift (* n size)
+        new-net (+ net shift)]
+    (when (or (< new-net 0) (> new-net 0xFFFFFFFF))
+      (throw (ex-info (str "Adjacent block falls outside valid IPv4 range") {:cidr cidr :n n})))
+    (str (ip/long->ip new-net) "/" prefix)))
+
 (def ^:private max-tree-leaves 65536)
 
 (defn- tree-leaf-count [prefix max-prefix]

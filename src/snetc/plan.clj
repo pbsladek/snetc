@@ -126,6 +126,25 @@
     :else
     node))
 
+(defn- cidr-str [net prefix]
+  (str (ip/long->ip net) "/" prefix))
+
+(defn- split-tree-to-prefix [net prefix target-prefix]
+  (let [cidr (cidr-str net prefix)]
+    (if (= prefix target-prefix)
+      {:cidr cidr :label nil :children nil}
+      (let [child-prefix (inc prefix)
+            child-size (bit-shift-left 1 (- 32 child-prefix))]
+        {:cidr cidr
+         :label nil
+         :children [(split-tree-to-prefix net child-prefix target-prefix)
+                    (split-tree-to-prefix (+ net child-size) child-prefix target-prefix)]}))))
+
+(defn- leftmost-leaf-cidr [node]
+  (if (seq (:children node))
+    (leftmost-leaf-cidr (first (:children node)))
+    (:cidr node)))
+
 (defn split-leaf
   "Returns plan with cidr split into two child leaves.
   Throws ex-info if cidr is not a splittable leaf."
@@ -137,6 +156,49 @@
                          (split-once cidr))
           new-root (update-node (:root plan) cidr #(assoc % :children children))]
       (with-history plan new-root (:cidr (first children))))))
+
+(defn split-leaf-to-prefix
+  "Returns plan with cidr recursively split until every descendant is target-prefix.
+  Throws ex-info if cidr is not a splittable leaf or target-prefix is invalid."
+  [planner cidr target-prefix]
+  (when-not (subnet/valid-prefix? target-prefix)
+    (throw (ex-info (str "Target prefix must be 0–32, got: " target-prefix)
+                    {:target-prefix target-prefix})))
+  (let [cidr (normalize-cidr cidr)
+        start-prefix (cidr-prefix cidr)]
+    (when (< target-prefix start-prefix)
+      (throw (ex-info (str "Target prefix /" target-prefix
+                           " is smaller than selected /" start-prefix)
+                      {:cidr cidr :target-prefix target-prefix})))
+    (if (= target-prefix start-prefix)
+      (assoc planner :cursor cidr)
+      (do
+        (when-not (can-split? planner cidr)
+          (throw (ex-info (str "Cannot split subnet: " cidr) {:cidr cidr})))
+        (let [[net _] (subnet/cidr->range cidr)
+              subtree (split-tree-to-prefix net start-prefix target-prefix)
+              existing (find-node planner cidr)
+              subtree (assoc subtree :label (:label existing))
+              new-root (update-node (:root planner) cidr (constantly subtree))]
+          (with-history planner new-root (leftmost-leaf-cidr subtree)))))))
+
+(defn hosts->target-prefix
+  "Returns the smallest prefix whose usable host count is >= host-count."
+  [host-count]
+  (when (< host-count 1)
+    (throw (ex-info (str "Host count must be >= 1, got: " host-count)
+                    {:host-count host-count})))
+  (loop [p 32]
+    (cond
+      (< p 0) (throw (ex-info (str "No IPv4 subnet can fit " host-count " hosts")
+                              {:host-count host-count}))
+      (>= (ip/usable-hosts p) host-count) p
+      :else (recur (dec p)))))
+
+(defn split-leaf-for-hosts
+  "Splits cidr to the tightest prefix that provides at least host-count usable hosts."
+  [planner cidr host-count]
+  (split-leaf-to-prefix planner cidr (hosts->target-prefix host-count)))
 
 (defn- joinable-parent? [node cidr]
   (and (:children node)
@@ -165,6 +227,30 @@
     (let [parent (parent-cidr cidr)
           new-root (join-node (:root plan) cidr)]
       (with-history plan new-root parent))))
+
+(defn join-leaf-to-prefix
+  "Returns plan after repeatedly joining cidr upward until target-prefix is reached."
+  [planner cidr target-prefix]
+  (when-not (subnet/valid-prefix? target-prefix)
+    (throw (ex-info (str "Target prefix must be 0–32, got: " target-prefix)
+                    {:target-prefix target-prefix})))
+  (let [cidr (normalize-cidr cidr)
+        start-prefix (cidr-prefix cidr)]
+    (when (> target-prefix start-prefix)
+      (throw (ex-info (str "Target prefix /" target-prefix
+                           " is larger than selected /" start-prefix)
+                      {:cidr cidr :target-prefix target-prefix})))
+    (loop [p planner
+           current cidr]
+      (let [prefix (cidr-prefix current)]
+        (cond
+          (= prefix target-prefix) (assoc p :cursor current)
+          (not (can-join? p current))
+          (throw (ex-info (str "Cannot join " current " toward /" target-prefix)
+                          {:cidr current :target-prefix target-prefix}))
+          :else
+          (let [p' (join-leaf p current)]
+            (recur p' (:cursor p'))))))))
 
 (defn label-leaf
   "Returns plan with label assigned to cidr. Blank labels are stored as nil."

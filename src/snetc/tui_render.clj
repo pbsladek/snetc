@@ -1,9 +1,7 @@
 (ns snetc.tui-render
   "Pure rendering helpers for the interactive subnet planner."
   (:require [clojure.string :as str]
-            [snetc.ip :as ip]
-            [snetc.plan :as plan]
-            [snetc.subnet :as subnet]))
+            [snetc.tui-model :as model]))
 
 (def min-body-height 1)
 (def max-subnet-width 18)
@@ -16,46 +14,27 @@
       (<= (count s) width) s
       :else (subs s 0 width))))
 
+(defn- clip-value [s width]
+  (let [s (str s)]
+    (cond
+      (<= width 0) ""
+      (<= (count s) width) s
+      (= width 1) ">"
+      :else (str (subs s 0 (dec width)) ">"))))
+
 (defn- left [width s]
   (format (str "%-" width "s") (clip s width)))
+
+(defn- left-value [width s]
+  (format (str "%-" width "s") (clip-value s width)))
 
 (defn- right [width n]
   (format (str "%" width "d") n))
 
-(defn- range-label [cidr]
-  (let [[start end] (subnet/cidr->range cidr)]
-    (str (ip/long->ip start) ".." (ip/long->ip end))))
-
-(defn- usable-label [{:keys [first-host last-host]}]
-  (str first-host ".." last-host))
-
-(defn- action-label [can-split? can-join?]
-  (cond
-    (and can-split? can-join?) "s/j"
-    can-split? "s"
-    can-join? "j"
-    :else "-"))
-
 (defn rows
   "Returns precomputed visible-row data for plan."
   [planner]
-  (mapv (fn [idx {:keys [cidr depth label]}]
-          (let [info (subnet/subnet-info cidr)
-                can-split? (plan/can-split? planner cidr)
-                can-join? (plan/can-join? planner cidr)]
-            {:idx (inc idx)
-             :cidr cidr
-             :depth depth
-             :label label
-             :mask (:mask info)
-             :range (range-label cidr)
-             :usable (usable-label info)
-             :hosts (:hosts info)
-             :can-split? can-split?
-             :can-join? can-join?
-             :action (action-label can-split? can-join?)}))
-        (range)
-        (plan/leaves planner)))
+  (model/rows planner))
 
 (defn clamp-selected [selected total]
   (cond
@@ -109,22 +88,49 @@
     :tiny (+ 7 subnet 1 hosts 1 action)))
 
 (defn- table-layout [width rows]
-  (let [cols (column-widths rows)]
+  (let [cols (column-widths rows)
+        mode (cond
+               (<= (mode-width :full cols) width) :full
+               (<= (mode-width :standard cols) width) :standard
+               (<= (mode-width :compact cols) width) :compact
+               :else :tiny)
+        base-width (mode-width mode cols)
+        label-width (let [remaining (- width base-width 1)]
+                      (if (pos? remaining)
+                        (min 24 remaining)
+                        0))]
     {:mode (cond
-             (<= (mode-width :full cols) width) :full
-             (<= (mode-width :standard cols) width) :standard
-             (<= (mode-width :compact cols) width) :compact
+             (= :full mode) :full
+             (= :standard mode) :standard
+             (= :compact mode) :compact
              :else :tiny)
-     :cols cols}))
+     :cols cols
+     :label-width label-width}))
 
-(defn- with-label [width line label]
-  (let [label (str label)
-        remaining (- width (count line))]
-    (if (and (> remaining 1) (seq label))
-      (str line " " (clip label (dec remaining)))
-      line)))
+(defn layout
+  "Returns the table layout for width and rows.
+  The TUI loop caches this per visible row set so idle repaints do not rescan
+  every row just to choose columns."
+  [width rows]
+  (table-layout width rows))
 
-(defn- table-header [width {:keys [mode cols]}]
+(defn layout-mode [width rows]
+  (:mode (layout width rows)))
+
+(defn hidden-columns [mode]
+  (case mode
+    :full []
+    :standard ["usable"]
+    :compact ["mask" "usable"]
+    :tiny ["mask" "range" "usable"]
+    []))
+
+(defn- append-label [{:keys [label-width]} line label]
+  (if (pos? label-width)
+    (str line " " (left-value label-width (or label "")))
+    line))
+
+(defn- table-header [width {:keys [mode cols] :as layout}]
   (let [line (case mode
                :full
                (str "    #  "
@@ -155,72 +161,140 @@
                     (left (:subnet cols) "Subnet") " "
                     (left (:hosts cols) "Hosts") " "
                     (left (:action cols) "Act")))]
-    (with-label width line "Lbl")))
+    (fit-line width (append-label layout line "Lbl"))))
 
-(defn- row-line [width {:keys [mode cols]} selected? {:keys [idx cidr label mask range usable hosts action]}]
+(defn- row-line [width {:keys [mode cols] :as layout} selected? {:keys [idx cidr label mask range usable hosts action]}]
   (let [marker (if selected? ">" " ")
-        label (or label "")
         line (case mode
                :full
                (str marker " " (right 3 idx) "  "
-                    (left (:subnet cols) cidr) "  "
-                    (left (:mask cols) mask) "  "
-                    (left (:range cols) range) "  "
-                    (left (:usable cols) usable) "  "
+                    (left-value (:subnet cols) cidr) "  "
+                    (left-value (:mask cols) mask) "  "
+                    (left-value (:range cols) range) "  "
+                    (left-value (:usable cols) usable) "  "
                     (right (:hosts cols) hosts) "  "
-                    (left (:action cols) action))
+                    (left-value (:action cols) action))
 
                :standard
                (str marker " " (right 3 idx) "  "
-                    (left (:subnet cols) cidr) "  "
-                    (left (:mask cols) mask) "  "
-                    (left (:range cols) range) "  "
+                    (left-value (:subnet cols) cidr) "  "
+                    (left-value (:mask cols) mask) "  "
+                    (left-value (:range cols) range) "  "
                     (right (:hosts cols) hosts) "  "
-                    (left (:action cols) action))
+                    (left-value (:action cols) action))
 
                :compact
                (str marker " " (right 3 idx) "  "
-                    (left (:subnet cols) cidr) "  "
-                    (left (:range cols) range) "  "
+                    (left-value (:subnet cols) cidr) "  "
+                    (left-value (:range cols) range) "  "
                     (right (:hosts cols) hosts) " "
-                    (left (:action cols) action))
+                    (left-value (:action cols) action))
 
                :tiny
                (str marker " " (right 3 idx) "  "
-                    (left (:subnet cols) cidr) " "
+                    (left-value (:subnet cols) cidr) " "
                     (right (:hosts cols) hosts) " "
-                    (left (:action cols) action)))]
-    (fit-line width (with-label width line label))))
+                    (left-value (:action cols) action)))]
+    (fit-line width (append-label layout line label))))
 
-(defn render
-  "Returns a full ANSI screen for interactive planner state."
-  [{:keys [plan selected scroll message]} width height]
+(defn- prefix-summary [prefixes]
+  (if (seq prefixes)
+    (->> prefixes
+         (take 6)
+         (map (fn [{:keys [prefix count]}] (str "/" prefix ":" count)))
+         (str/join " "))
+    ""))
+
+(defn- summary-line [{:keys [selected prefixes visible-count filter hidden undo redo]}]
+  (let [selected-str (if selected
+                       (str (:cidr selected) " " (:range selected) " " (:hosts selected) " hosts")
+                       "no subnet selected")
+        filter-str (when-not (str/blank? (str filter))
+                     (str "  filter: " filter " (" visible-count ")"))
+        hidden-str (when (seq hidden)
+                     (str "  hidden: " (str/join "," hidden)))
+        history-str (str "  undo:" (or undo 0) " redo:" (or redo 0))
+        prefixes-str (prefix-summary prefixes)]
+    (str selected-str
+         (when (seq prefixes-str) (str "  " prefixes-str))
+         filter-str
+         hidden-str
+         history-str)))
+
+(defn frame
+  "Returns the render frame as {:lines :width :height :mode} without ANSI wrapping."
+  [{:keys [plan rows selected scroll message filter summary layout] :as state} width height]
   (let [screen-width (max 1 width)
         width (if (> screen-width 1) (dec screen-width) screen-width)
         height (max 1 height)
-        all-rows (rows plan)
-        layout (table-layout width all-rows)
+        all-rows (or rows (model/rows plan))
+        layout (or layout (table-layout width all-rows))
         header-lines 4
-        footer-lines 3
+        footer-lines 4
         body-height (max min-body-height (- height header-lines footer-lines))
         {:keys [rows scroll selected]} (viewport all-rows selected scroll body-height)
+        mode (:mode layout)
         title (str "snetc tree: " (:parent plan) "  (" (count all-rows) " leaf subnet"
-                   (when-not (= 1 (count all-rows)) "s") ")")
+                   (when-not (= 1 (count all-rows)) "s") ")"
+                   "  [" (name mode) "]"
+                   (when-not (str/blank? (str filter))
+                     (str "  filter:" filter)))
         table-header (table-header width layout)
         rule (apply str (repeat (min width 126) "-"))
-        body (map (fn [row]
-                    (row-line width layout (= (:idx row) (inc selected)) row))
-                  rows)
-        help "up/down or k/j select  s/enter split  J/backspace join  l label  u undo  r redo  e export  p print  q quit"
+        body (map-indexed (fn [idx row]
+                            (row-line width layout (= (+ scroll idx) selected) row))
+                          rows)
+        help "up/down k/j  s split  J join  S split-to  H hosts  f filter  / search  : cmd  i import  e export  p print  q quit"
+        summary (or summary (model/summary all-rows (nth all-rows selected nil)))
+        summary (assoc summary
+                       :filter filter
+                       :hidden (hidden-columns mode)
+                       :undo (count (:undo plan))
+                       :redo (count (:redo plan)))
         msg (or message "")]
-    (str "\u001b[?25l\u001b[2J\u001b[H"
-         (str/join "\r\n"
-                   (concat [(fit-line width title)
-                            ""
-                            (fit-line width table-header)
-                            rule]
-                           body
-                           [(apply str (repeat width " "))
-                            (fit-line width help)
-                            (fit-line width msg)]))
-         "\u001b[0m")))
+    {:width width
+     :height height
+     :scroll scroll
+     :selected selected
+     :mode mode
+     :lines (vec
+             (concat [(fit-line width title)
+                      ""
+                      (fit-line width table-header)
+                      rule]
+                     body
+                     [(apply str (repeat width " "))
+                      (fit-line width (summary-line summary))
+                      (fit-line width help)
+                      (fit-line width msg)]))}))
+
+(defn full-screen
+  "Wraps frame lines as a full repaint ANSI screen."
+  [{:keys [lines]}]
+  (str "\u001b[?25l\u001b[2J\u001b[H"
+       (str/join "\r\n" lines)
+       "\u001b[0m"))
+
+(defn diff-screen
+  "Returns ANSI writes needed to transform old-frame into new-frame.
+  Falls back to a full repaint when dimensions are unknown or changed."
+  [old-frame new-frame]
+  (if (or (nil? old-frame)
+          (not= (:width old-frame) (:width new-frame))
+          (not= (:height old-frame) (:height new-frame)))
+    (full-screen new-frame)
+    (let [old-lines (:lines old-frame)
+          new-lines (:lines new-frame)
+          max-lines (max (count old-lines) (count new-lines))
+          writes (keep (fn [idx]
+                         (let [old-line (get old-lines idx "")
+                               new-line (get new-lines idx "")]
+                           (when (not= old-line new-line)
+                             (str "\u001b[" (inc idx) ";1H" new-line "\u001b[K"))))
+                       (range max-lines))]
+      (str "\u001b[?25l" (apply str writes) "\u001b[0m"))))
+
+(defn render
+  "Returns a full ANSI screen for interactive planner state."
+  [state width height]
+  (full-screen (frame state width height)))

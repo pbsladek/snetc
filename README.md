@@ -1,5 +1,9 @@
 # snetc
 
+[![Test](https://github.com/pbsladek/snetc/actions/workflows/test.yml/badge.svg)](https://github.com/pbsladek/snetc/actions/workflows/test.yml)
+[![Release](https://github.com/pbsladek/snetc/actions/workflows/release.yml/badge.svg)](https://github.com/pbsladek/snetc/actions/workflows/release.yml)
+[![Codecov](https://codecov.io/gh/pbsladek/snetc/graph/badge.svg)](https://codecov.io/gh/pbsladek/snetc)
+
 IPv4 subnet calculator for the command line.
 
 ## Install
@@ -32,6 +36,9 @@ sudo mv snetc-linux-amd64 /usr/local/bin/snetc
 git clone https://github.com/pbsladek/snetc.git
 cd snetc
 make native          # compiles → dist/snetc
+make native-smoke    # optional: smoke-tests the native binary
+make bench           # optional: pure ops/TUI timing probes
+make bench-native    # optional: native CLI timing probes
 sudo cp dist/snetc /usr/local/bin/snetc
 ```
 

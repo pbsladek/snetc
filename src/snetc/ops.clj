@@ -102,31 +102,60 @@
   "Returns all overlapping pairs in cidrs as {:a :b :type} maps.
   :type is :a-contains-b, :b-contains-a, or :partial."
   [cidrs]
-  ;; mapv so cidr->range is called once per CIDR, not once per pair.
-  (let [indexed (mapv (fn [i c] [i c (subnet/cidr->range c)])
-                      (range (count cidrs))
-                      cidrs)]
-    (vec (for [[i ca ra] indexed
-               [j cb rb] indexed
-               :when (< i j)
-               :when (let [[s1 e1] ra [s2 e2] rb] (and (<= s1 e2) (<= s2 e1)))]
-           {:a ca :b cb :type (overlap-type ra rb)}))))
+  (let [indexed (->> cidrs
+                     (map-indexed (fn [i c]
+                                    (let [[s e :as r] (subnet/cidr->range c)]
+                                      {:idx i :cidr c :range r :start s :end e})))
+                     (sort-by (juxt :start :end :idx)))]
+    (loop [remaining indexed
+           active []
+           acc []]
+      (if-let [{:keys [start range cidr idx] :as current} (first remaining)]
+        (let [active (filterv #(>= (:end %) start) active)
+              pairs  (keep (fn [{other-idx :idx other-cidr :cidr other-range :range}]
+                             (let [pair [(min other-idx idx) (max other-idx idx)]
+                                   [a-cidr b-cidr a-range b-range]
+                                   (if (< other-idx idx)
+                                     [other-cidr cidr other-range range]
+                                     [cidr other-cidr range other-range])]
+                               {:pair pair
+                                :a a-cidr
+                                :b b-cidr
+                                :type (overlap-type a-range b-range)}))
+                           active)]
+          (recur (rest remaining) (conj active current) (into acc pairs)))
+        (mapv #(dissoc % :pair) (sort-by :pair acc))))))
 
 (defn longest-prefix-match
   "Returns the longest-prefix-matching CIDR from routes for ip, or nil."
   [ip routes]
-  ;; keep yields [prefix route] so the parsed prefix serves both the
-  ;; containment test and the sort key without a second parse-cidr call.
   (let [ip-n (ip/ip->long ip)]
-    (->> routes
-         (keep (fn [route]
-                 (let [{:keys [ip-str prefix]} (subnet/parse-cidr route)
-                       net (ip/network-addr (ip/ip->long ip-str) prefix)]
-                   (when (= net (ip/network-addr ip-n prefix))
-                     [prefix route]))))
-         (sort-by first)
-         last
-         second)))
+    (second
+     (reduce (fn [[best-prefix :as best] route]
+               (let [{:keys [ip-str prefix]} (subnet/parse-cidr route)
+                     net (ip/network-addr (ip/ip->long ip-str) prefix)]
+                 (if (and (= net (ip/network-addr ip-n prefix))
+                          (> prefix best-prefix))
+                   [prefix route]
+                   best)))
+             [-1 nil]
+             routes))))
+
+(defn supernet
+  "Returns the smallest single CIDR string that covers all given cidrs.
+  Walks up the prefix tree until it finds a block that contains every input range."
+  [cidrs]
+  (let [ranges  (mapv subnet/cidr->range cidrs)
+        min-start (apply min (map first ranges))
+        max-end   (apply max (map second ranges))]
+    (loop [prefix 32]
+      (when (< prefix 0)
+        (throw (ex-info "Cannot find covering supernet (exhausted all prefixes)" {})))
+      (let [net   (ip/network-addr min-start prefix)
+            bcast (ip/broadcast-addr net prefix)]
+        (if (<= max-end bcast)
+          (str (ip/long->ip net) "/" prefix)
+          (recur (dec prefix)))))))
 
 (defn hosts->min-prefix
   "Returns the smallest prefix length whose usable host count is >= n."
@@ -138,6 +167,21 @@
       (< p 0)                (throw (ex-info (str "No prefix can fit " n " hosts") {:n n}))
       (>= (ip/usable-hosts p) n) p
       :else                  (recur (dec p)))))
+
+(defn next-available
+  "Returns the first available aligned CIDR for n hosts within parent-cidr,
+  given already-allocated CIDRs. Returns nil if no block fits."
+  [parent-cidr allocated-cidrs n]
+  (let [prefix (hosts->min-prefix n)
+        size   (bit-shift-left 1 (- 32 prefix))
+        gaps   (free-space parent-cidr allocated-cidrs)]
+    (some (fn [gap-cidr]
+            (let [[gs ge] (subnet/cidr->range gap-cidr)
+                  remainder (mod gs size)
+                  aligned   (if (zero? remainder) gs (+ gs (- size remainder)))]
+              (when (<= (+ aligned size -1) ge)
+                (str (ip/long->ip aligned) "/" prefix))))
+          gaps)))
 
 (defn- fragmentation-score [free-count]
   (cond

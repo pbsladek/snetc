@@ -58,6 +58,72 @@
       (is (re-find #"up/down" screen))
       (is (re-find #"Ready" screen)))))
 
+(deftest frame-and-diff-test
+  (testing "frame exposes layout mode and summary lines"
+    (let [frame (render/frame {:plan (plan/new-plan "10.0.0.0/24")
+                               :selected 0
+                               :scroll 0
+                               :message "Ready"}
+                              120
+                              12)
+          text (str/join "\n" (:lines frame))]
+      (is (= :full (:mode frame)))
+      (is (str/includes? text "[full]"))
+      (is (str/includes? text "/24:1"))
+      (is (str/includes? text "undo:0 redo:0"))))
+
+  (testing "active filter is visible in the title"
+    (let [frame (render/frame {:plan (plan/new-plan "10.0.0.0/24")
+                               :selected 0
+                               :scroll 0
+                               :filter "@edge"
+                               :message "Ready"}
+                              80
+                              12)]
+      (is (str/includes? (first (:lines frame)) "filter:@edge"))))
+
+  (testing "hidden columns are reported in compact layouts"
+    (let [frame (render/frame {:plan (plan/new-plan "10.0.0.0/24")
+                               :selected 0
+                               :scroll 0
+                               :message "Ready"}
+                              70
+                              12)
+          text (str/join "\n" (:lines frame))]
+      (is (seq (render/hidden-columns (:mode frame))))
+      (is (str/includes? text "hidden:"))))
+
+  (testing "diff-screen writes changed lines instead of clearing unchanged frames"
+    (let [old-frame (render/frame {:plan (plan/new-plan "10.0.0.0/24")
+                                   :selected 0 :scroll 0 :message "one"}
+                                  80 12)
+          new-frame (render/frame {:plan (plan/new-plan "10.0.0.0/24")
+                                   :selected 0 :scroll 0 :message "two"}
+                                  80 12)
+          diff (render/diff-screen old-frame new-frame)]
+      (is (str/includes? diff "\u001b["))
+      (is (not (str/includes? diff "\u001b[2J")))
+      (is (str/includes? diff "two")))))
+
+(deftest cached-rows-test
+  (testing "render uses precomputed rows from state when present"
+    (let [screen (render/render {:plan (plan/new-plan "10.0.0.0/24")
+                                 :rows [{:idx 1
+                                         :cidr "10.9.0.0/24"
+                                         :label "cached"
+                                         :mask "255.255.255.0"
+                                         :range "10.9.0.0..10.9.0.255"
+                                         :usable "10.9.0.1..10.9.0.254"
+                                         :hosts 254
+                                         :action "s"}]
+                                 :selected 0
+                                 :scroll 0
+                                 :message "Ready"}
+                                100
+                                20)]
+      (is (str/includes? screen "10.9.0.0/24"))
+      (is (str/includes? screen "cached")))))
+
 (deftest raw-mode-line-ending-test
   (testing "rendered screens use CRLF so raw terminal mode returns to column one"
     (let [screen (render/render {:plan (plan/new-plan "10.0.0.0/24")
@@ -81,6 +147,22 @@
                                     24)]
           (is (every? #(<= (count %) width) (visible-lines screen))
               (str "line exceeds width " width)))))))
+
+(deftest clipped-label-test
+  (testing "long labels are clipped with a visible marker instead of silently disappearing"
+    (let [planner (-> (plan/new-plan "10.0.0.0/24")
+                      (plan/label-leaf "10.0.0.0/24" "alphabetical-routing-boundary"))
+          screen (render/render {:plan planner
+                                 :selected 0
+                                 :scroll 0
+                                 :message "Ready"}
+                                80
+                                12)
+          row (first (filter #(str/includes? % "10.0.0.0/24")
+                             (filter #(str/starts-with? % ">")
+                                     (visible-lines screen))))]
+      (is (str/includes? row "alphabetic>"))
+      (is (<= (count row) 80)))))
 
 (deftest deep-tree-format-test
   (testing "deeply split plans keep subnet addresses plain and left-aligned"

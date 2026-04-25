@@ -77,4 +77,74 @@
           imported (plan/import-plan (plan/export-plan planner))]
       (is (= (plan/leaf-cidrs planner) (plan/leaf-cidrs imported)))
       (is (= "web" (:label (plan/find-node imported "10.0.0.0/25"))))
-      (is (true? (plan/validate-plan imported))))))
+      (is (true? (plan/validate-plan imported)))))
+
+  (testing "import-plan accepts EDN string"
+    (let [planner (plan/new-plan "10.0.0.0/24")
+          edn-str (pr-str (plan/export-plan planner))
+          imported (plan/import-plan edn-str)]
+      (is (= ["10.0.0.0/24"] (plan/leaf-cidrs imported)))))
+
+  (testing "import-plan throws on unsupported version"
+    (let [data {:version 999 :parent "10.0.0.0/24"
+                :root {:cidr "10.0.0.0/24" :label nil :children nil}}]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unsupported plan version"
+                            (plan/import-plan data)))))
+
+  (testing "import-plan throws when root does not match parent"
+    (let [data {:version 1 :parent "10.0.0.0/24"
+                :root {:cidr "10.0.0.0/16" :label nil :children nil}}]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"root does not match"
+                            (plan/import-plan data))))))
+
+(deftest split-once-test
+  (testing "split-once returns two child CIDRs"
+    (is (= ["10.0.0.0/25" "10.0.0.128/25"] (plan/split-once "10.0.0.0/24"))))
+
+  (testing "split-once throws on /32"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cannot split /32"
+                          (plan/split-once "10.0.0.1/32")))))
+
+(deftest bulk-plan-ops-test
+  (testing "split-leaf-to-prefix recursively splits a leaf"
+    (let [planner (plan/split-leaf-to-prefix (plan/new-plan "10.0.0.0/24")
+                                             "10.0.0.0/24"
+                                             26)]
+      (is (= ["10.0.0.0/26" "10.0.0.64/26" "10.0.0.128/26" "10.0.0.192/26"]
+             (plan/leaf-cidrs planner)))
+      (is (= 1 (count (:undo planner))))
+      (is (= ["10.0.0.0/24"] (plan/leaf-cidrs (plan/undo planner))))
+      (is (true? (plan/validate-plan planner)))))
+
+  (testing "split-leaf-for-hosts chooses the tightest host-fitting prefix"
+    (let [planner (plan/split-leaf-for-hosts (plan/new-plan "10.0.0.0/24")
+                                             "10.0.0.0/24"
+                                             62)]
+      (is (= ["10.0.0.0/26" "10.0.0.64/26" "10.0.0.128/26" "10.0.0.192/26"]
+             (plan/leaf-cidrs planner)))))
+
+  (testing "join-leaf-to-prefix joins upward through sibling leaves"
+    (let [planner (-> (plan/new-plan "10.0.0.0/24")
+                      (plan/split-leaf-to-prefix "10.0.0.0/24" 25)
+                      (plan/join-leaf-to-prefix "10.0.0.0/25" 24))]
+      (is (= ["10.0.0.0/24"] (plan/leaf-cidrs planner))))))
+
+(deftest plan-error-paths-test
+  (testing "join-leaf throws when cidr cannot be joined"
+    (let [planner (plan/new-plan "10.0.0.0/24")]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cannot join"
+                            (plan/join-leaf planner "10.0.0.0/24")))))
+
+  (testing "label-leaf throws on unknown cidr"
+    (let [planner (plan/new-plan "10.0.0.0/24")]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unknown subnet"
+                            (plan/label-leaf planner "192.168.0.0/24" "x")))))
+
+  (testing "undo on fresh plan returns plan unchanged"
+    (let [planner (plan/new-plan "10.0.0.0/24")]
+      (is (= (plan/leaf-cidrs planner) (plan/leaf-cidrs (plan/undo planner))))))
+
+  (testing "redo when nothing to redo returns plan unchanged"
+    (let [planner (plan/new-plan "10.0.0.0/24")
+          split   (plan/split-leaf planner "10.0.0.0/24")]
+      (is (= (plan/leaf-cidrs split) (plan/leaf-cidrs (plan/redo split)))))))

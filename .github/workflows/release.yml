@@ -47,6 +47,9 @@ jobs:
       - name: Build native binary
         run: make native
 
+      - name: Smoke test native binary
+        run: make native-smoke
+
       - name: Rename binary for upload
         run: cp dist/snetc ${{ matrix.artifact }}
 

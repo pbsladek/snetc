@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BIN="${1:-dist/snetc}"
+
+if [[ ! -x "$BIN" ]]; then
+  echo "native smoke: executable not found: $BIN" >&2
+  exit 1
+fi
+
+expect_contains() {
+  local needle="$1"
+  shift
+  local output
+  output="$("$@")"
+  if [[ "$output" != *"$needle"* ]]; then
+    echo "native smoke: expected output to contain: $needle" >&2
+    echo "command: $*" >&2
+    echo "output:" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+}
+
+expect_exit() {
+  local expected="$1"
+  shift
+  set +e
+  "$@" >/tmp/snetc-smoke.out 2>/tmp/snetc-smoke.err
+  local actual="$?"
+  set -e
+  if [[ "$actual" != "$expected" ]]; then
+    echo "native smoke: expected exit $expected, got $actual" >&2
+    echo "command: $*" >&2
+    echo "stdout:" >&2
+    cat /tmp/snetc-smoke.out >&2
+    echo "stderr:" >&2
+    cat /tmp/snetc-smoke.err >&2
+    exit 1
+  fi
+}
+
+expect_contains "IPv4 subnet calculator" "$BIN" --help
+expect_contains '"cidr":"10.0.0.0\/24"' "$BIN" 10.0.0.0/24 --json
+expect_contains "10.0.0.0/26" "$BIN" 10.0.0.0/24 --tree 26
+expect_contains '"category":"Private"' "$BIN" classify 10.0.0.1 8.8.8.8 --json
+expect_contains '"result":["10.0.0.0\/23"]' "$BIN" aggregate 10.0.0.0/24 10.0.1.0/24 --json
+expect_contains '"result":"10.0.0.0\/23"' "$BIN" supernet 10.0.0.0/24 10.0.1.0/24 --json
+
+batch='[{"cmd":"info","args":["10.0.0.0/24"]},{"cmd":"classify","args":["8.8.8.8"]}]'
+expect_contains '"cmd":"info"' env "SNETC_BATCH=$batch" bash -c 'printf "%s" "$SNETC_BATCH" | "$1" batch' _ "$BIN"
+
+expect_exit 2 "$BIN" validate 10.0.0.1 bad --json
+expect_exit 1 env TERM=dumb "$BIN" tree 10.0.0.0/24
+
+echo "native smoke: ok ($BIN)"

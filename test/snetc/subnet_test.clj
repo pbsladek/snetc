@@ -3,7 +3,7 @@
             [snetc.ip     :refer [ip->long]]
             [snetc.subnet :refer [valid-ip? valid-prefix? parse-cidr subnet-info
                                   split-subnets subnet-tree cidr->range
-                                  range->cidrs ip-in-cidr?]]))
+                                  range->cidrs ip-in-cidr? adjacent-cidr]]))
 
 ;;; ── valid-ip? ────────────────────────────────────────────────────────────────
 
@@ -184,6 +184,31 @@
       (is (= end   (second (last rngs))))
       (is (every? (fn [[[_ e1] [s2 _]]] (= (inc e1) s2))
                   (partition 2 1 rngs))))))
+
+;;; ── adjacent-cidr ────────────────────────────────────────────────────────────
+
+(deftest adjacent-cidr-test
+  (testing "next block (n=1)"
+    (is (= "10.0.2.0/24" (adjacent-cidr "10.0.1.0/24" 1))))
+
+  (testing "previous block (n=-1)"
+    (is (= "10.0.0.0/24" (adjacent-cidr "10.0.1.0/24" -1))))
+
+  (testing "skip multiple blocks forward"
+    (is (= "10.0.4.0/24" (adjacent-cidr "10.0.1.0/24" 3))))
+
+  (testing "skip multiple blocks backward"
+    (is (= "10.0.3.0/24" (adjacent-cidr "10.0.5.0/24" -2))))
+
+  (testing "prefix is preserved in result"
+    (is (= "10.1.0.0/16" (adjacent-cidr "10.0.0.0/16" 1)))
+    (is (= "10.0.0.128/25" (adjacent-cidr "10.0.0.0/25" 1))))
+
+  (testing "stepping off the top of the address space throws"
+    (is (thrown? Exception (adjacent-cidr "255.255.255.0/24" 1))))
+
+  (testing "stepping off the bottom of the address space throws"
+    (is (thrown? Exception (adjacent-cidr "0.0.0.0/24" -1)))))
 
 ;;; ── ip-in-cidr? ──────────────────────────────────────────────────────────────
 
