@@ -107,24 +107,26 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             ref="${GITHUB_REF_NAME}"
             version="${ref#v}"
-            {
-              echo "tags<<EOF"
-              echo "-t ${IMAGE_NAME}:${ref}"
-              echo "-t ${IMAGE_NAME}:${version}"
-              echo "-t ${IMAGE_NAME}:latest"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            echo "tags=-t ${IMAGE_NAME}:${ref} -t ${IMAGE_NAME}:${version} -t ${IMAGE_NAME}:latest" >> "$GITHUB_OUTPUT"
           else
-            {
-              echo "tags<<EOF"
-              echo "-t ${IMAGE_NAME}:${INPUT_TAG}"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            echo "tags=-t ${IMAGE_NAME}:${INPUT_TAG}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create manifest list
         working-directory: ${{ runner.temp }}/digests
         run: |
+          set -euo pipefail
+          digests=(*)
+          if [ "${digests[0]}" = "*" ]; then
+            echo "No digest artifacts found in $(pwd)" >&2
+            exit 1
+          fi
+
+          sources=()
+          for digest in "${digests[@]}"; do
+            sources+=("${IMAGE_NAME}@sha256:${digest}")
+          done
+
           docker buildx imagetools create \
             ${{ steps.meta.outputs.tags }} \
-            $(printf "${IMAGE_NAME}@sha256:%s " *)
+            "${sources[@]}"

@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [snetc.display  :as display]
             [snetc.subnet   :as subnet]
+            [snetc.ip       :as ip]
             [snetc.ops      :as ops]
             [snetc.classify :as classify]))
 
@@ -157,8 +158,8 @@
 (deftest print-range-result-test
   (testing "shows range boundaries and CIDR count"
     (let [cidrs (vec (subnet/range->cidrs
-                       (snetc.ip/ip->long "10.0.0.0")
-                       (snetc.ip/ip->long "10.0.0.255")))
+                       (ip/ip->long "10.0.0.0")
+                       (ip/ip->long "10.0.0.255")))
           o     (captured #(display/print-range-result "10.0.0.0" "10.0.0.255" cidrs))]
       (is (str/includes? o "10.0.0.0"))
       (is (str/includes? o "10.0.0.255"))

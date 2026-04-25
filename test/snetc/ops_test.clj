@@ -1,6 +1,6 @@
 (ns snetc.ops-test
   (:require [clojure.test :refer [deftest is testing]]
-            [snetc.subnet :refer [cidr->range subnet-info]]
+            [snetc.subnet :refer [cidr->range]]
             [snetc.ops    :refer [aggregate free-space cidr-diff
                                   hosts->min-prefix next-available plan-vlsm
                                   find-overlaps longest-prefix-match
