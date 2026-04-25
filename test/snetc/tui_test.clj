@@ -1,5 +1,6 @@
 (ns snetc.tui-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [snetc.plan :as plan]
             [snetc.tui :as tui]))
 
@@ -165,7 +166,7 @@
                                                       "memory://leaves")})
           result (press state :print-cidrs)]
       (is (= ["10.0.0.0/24"] @called))
-      (is (clojure.string/includes? (:message result) "memory://leaves")))))
+      (is (str/includes? (:message result) "memory://leaves")))))
 
 (deftest search-filter-and-command-test
   (testing "filter narrows selectable rows"
@@ -174,7 +175,7 @@
                     (assoc :terminal {:prompt (fn [_ _] "10.0.0.128")}))
           result (press state :filter)]
       (is (= "10.0.0.128/25" (:cursor (:plan result))))
-      (is (clojure.string/includes? (:message result) "1 row"))))
+      (is (str/includes? (:message result) "1 row"))))
 
   (testing "search selects by IP containment"
     (let [state (-> base-state
@@ -203,7 +204,7 @@
                     (press :filter))
           cleared (press state :escape)]
       (is (nil? (:filter cleared)))
-      (is (clojure.string/includes? (:message cleared) "cleared"))))
+      (is (str/includes? (:message cleared) "cleared"))))
 
   (testing "query aliases match prefix and label"
     (let [state (-> base-state
@@ -214,7 +215,7 @@
           by-label (press labeled :filter)
           by-prefix (press (assoc labeled :terminal {:prompt (fn [_ _] "/25")}) :filter)]
       (is (= "10.0.0.0/25" (:cursor (:plan by-label))))
-      (is (clojure.string/includes? (:message by-prefix) "2 row"))))
+      (is (str/includes? (:message by-prefix) "2 row"))))
 
   (testing "command aliases and help work"
     (let [prompts (atom ["s /26" "h 62" "f /26" "x" "?"])
@@ -231,7 +232,7 @@
       (is (string? (:message hosts-state)))
       (is (some? (:filter filtered-state)))
       (is (nil? (:filter cleared-state)))
-      (is (clojure.string/includes? (:message help-state) "Commands:")))))
+      (is (str/includes? (:message help-state) "Commands:")))))
 
 (deftest bulk-operation-key-test
   (testing "split-to-prefix key recursively splits selected subnet"
@@ -256,11 +257,11 @@
           result (press state :import)]
       (is (= ["10.0.0.0/25" "10.0.0.128/25"]
              (plan/leaf-cidrs (:plan result))))
-      (is (clojure.string/includes? (:message result) "Imported"))))
+      (is (str/includes? (:message result) "Imported"))))
 
   (testing "import errors distinguish missing files"
     (let [result (#'tui/import-plan-path base-state "/tmp/snetc-missing-plan.edn")]
-      (is (clojure.string/includes? (:message result) "not found")))))
+      (is (str/includes? (:message result) "not found")))))
 
 (deftest export-and-selected-output-test
   (testing "command export accepts an explicit path"
@@ -272,7 +273,7 @@
                                                         path)})
           result (press state :command)]
       (is (= "/tmp/custom.json" @called))
-      (is (clojure.string/includes? (:message result) "/tmp/custom.json"))))
+      (is (str/includes? (:message result) "/tmp/custom.json"))))
 
   (testing "print-selected writes selected CIDR through the adapter"
     (let [called (atom nil)
@@ -283,7 +284,7 @@
                                                          "memory://selected")})
           result (press state :command)]
       (is (= "10.0.0.0/24" @called))
-      (is (clojure.string/includes? (:message result) "memory://selected")))))
+      (is (str/includes? (:message result) "memory://selected")))))
 
 (deftest bulk-confirmation-test
   (testing "large bulk split can be cancelled before expansion"
@@ -338,8 +339,8 @@
                         k))
           :write! #(swap! writes conj %)})
         (is (= 2 (count @writes)))
-        (is (clojure.string/includes? (first @writes) "\u001b[2J"))
-        (is (not (clojure.string/includes? (second @writes) "\u001b[2J")))))))
+        (is (str/includes? (first @writes) "\u001b[2J"))
+        (is (not (str/includes? (second @writes) "\u001b[2J")))))))
 
 (deftest apply-plan-op-error-test
   (testing "splitting a /32 leaf sets an error message"
@@ -359,7 +360,7 @@
 
   (testing "print-cidrs writes leaf CIDR file and sets success message"
     (let [result (press base-state :print-cidrs)]
-      (is (clojure.string/includes? (:message result) "snetc-leaves.txt"))))
+      (is (str/includes? (:message result) "snetc-leaves.txt"))))
 
   (testing "no subnet selected message when selection is out of bounds"
     (let [out-of-bounds (assoc base-state :selected 999)
@@ -391,6 +392,9 @@
     (is (= :page-up (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [27 91 53 126])))))
     (is (= :page-down (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [27 91 54 126]))))))
 
+  (testing "control-c maps to quit"
+    (is (= :quit (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [3]))))))
+
   (testing "letter keys map first/last navigation"
     (is (= :first (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [(byte 103)])))))
     (is (= :last (#'tui/read-key (java.io.ByteArrayInputStream. (byte-array [(byte 71)])))))))
@@ -402,62 +406,62 @@
     (let [planner (plan/new-plan "10.0.0.0/24")
           path    (#'tui/write-edn-plan! planner)]
       (is (string? path))
-      (is (clojure.string/ends-with? path ".edn"))))
+      (is (str/ends-with? path ".edn"))))
 
   (testing "write-json-plan! writes a JSON plan and returns path"
     (let [planner (plan/new-plan "10.0.0.0/24")
           path    (#'tui/write-json-plan! planner)]
       (is (string? path))
-      (is (clojure.string/ends-with? path ".json"))))
+      (is (str/ends-with? path ".json"))))
 
   (testing "write-yaml-plan! writes a YAML plan and returns path"
     (let [planner (plan/new-plan "10.0.0.0/24")
           path    (#'tui/write-yaml-plan! planner)]
       (is (string? path))
-      (is (clojure.string/ends-with? path ".yaml")))))
+      (is (str/ends-with? path ".yaml")))))
 
 (deftest yaml-generation-test
   (testing "plan->yaml generates a YAML string with version and parent"
     (let [planner (plan/new-plan "10.0.0.0/24")
           yaml    (#'tui/plan->yaml (plan/export-plan planner))]
       (is (string? yaml))
-      (is (clojure.string/includes? yaml "10.0.0.0/24"))
-      (is (clojure.string/includes? yaml "version:"))))
+      (is (str/includes? yaml "10.0.0.0/24"))
+      (is (str/includes? yaml "version:"))))
 
   (testing "node->yaml-lines generates lines for a leaf node (no children)"
     (let [planner (plan/new-plan "10.0.0.0/24")
           root    (:root (plan/export-plan planner))
           lines   (#'tui/node->yaml-lines root 0)]
       (is (seq lines))
-      (is (some #(clojure.string/includes? % "10.0.0.0/24") lines))
-      (is (some #(clojure.string/includes? % "children: null") lines))))
+      (is (some #(str/includes? % "10.0.0.0/24") lines))
+      (is (some #(str/includes? % "children: null") lines))))
 
   (testing "node->yaml-lines includes children when present"
     (let [planner (plan/split-leaf (plan/new-plan "10.0.0.0/24") "10.0.0.0/24")
           root    (:root (plan/export-plan planner))
           lines   (#'tui/node->yaml-lines root 0)]
-      (is (some #(clojure.string/includes? % "children:") lines))
-      (is (some #(clojure.string/includes? % "10.0.0.0/25") lines))))
+      (is (some #(str/includes? % "children:") lines))
+      (is (some #(str/includes? % "10.0.0.0/25") lines))))
 
   (testing "node->yaml-lines includes label when present"
     (let [planner (-> (plan/new-plan "10.0.0.0/24")
                       (plan/label-leaf "10.0.0.0/24" "test label"))
           root    (:root (plan/export-plan planner))
           lines   (#'tui/node->yaml-lines root 0)]
-      (is (some #(clojure.string/includes? % "test label") lines))))
+      (is (some #(str/includes? % "test label") lines))))
 
   (testing "node->yaml-lines escapes backslashes in labels"
     (let [planner (-> (plan/new-plan "10.0.0.0/24")
                       (plan/label-leaf "10.0.0.0/24" "C:\\network"))
           root    (:root (plan/export-plan planner))
           lines   (#'tui/node->yaml-lines root 0)
-          label-line (first (filter #(clojure.string/includes? % "label:") lines))]
-      (is (clojure.string/includes? label-line "C:\\\\network"))))
+          label-line (first (filter #(str/includes? % "label:") lines))]
+      (is (str/includes? label-line "C:\\\\network"))))
 
   (testing "node->yaml-lines escapes double-quotes in labels"
     (let [planner (-> (plan/new-plan "10.0.0.0/24")
                       (plan/label-leaf "10.0.0.0/24" "say \"hello\""))
           root    (:root (plan/export-plan planner))
           lines   (#'tui/node->yaml-lines root 0)
-          label-line (first (filter #(clojure.string/includes? % "label:") lines))]
-      (is (clojure.string/includes? label-line "say \\\"hello\\\"")))))
+          label-line (first (filter #(str/includes? % "label:") lines))]
+      (is (str/includes? label-line "say \\\"hello\\\"")))))

@@ -223,7 +223,7 @@
 
 (defn frame
   "Returns the render frame as {:lines :width :height :mode} without ANSI wrapping."
-  [{:keys [plan rows selected scroll message filter summary layout] :as state} width height]
+  [{:keys [plan rows selected scroll message filter summary layout]} width height]
   (let [screen-width (max 1 width)
         width (if (> screen-width 1) (dec screen-width) screen-width)
         height (max 1 height)

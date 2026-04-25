@@ -118,7 +118,7 @@
         shift (* n size)
         new-net (+ net shift)]
     (when (or (< new-net 0) (> new-net 0xFFFFFFFF))
-      (throw (ex-info (str "Adjacent block falls outside valid IPv4 range") {:cidr cidr :n n})))
+      (throw (ex-info "Adjacent block falls outside valid IPv4 range" {:cidr cidr :n n})))
     (str (ip/long->ip new-net) "/" prefix)))
 
 (def ^:private max-tree-leaves 65536)

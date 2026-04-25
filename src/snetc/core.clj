@@ -401,35 +401,35 @@
         (display/print-supernet-result cidrs result)))))
 
 (defn- handle-analyze [args]
+  (when (> (count args) 1)
+    (die "Usage: snetc analyze [<file>]"))
   (let [text (cond
                (empty? args)
                (slurp *in*)
-               (= 1 (count args))
-               (try (slurp (first args))
-                    (catch Exception e (die (ex-message e))))
                :else
-               (die "Usage: snetc analyze [<file>]"))]
-    (let [routes (ops/parse-routes text)]
-      (when (empty? routes)
-        (die "No valid CIDR routes found in input"))
-      (let [analysis (ops/analyze-routes routes)]
-        (if *json?*
-          (display/print-json
-           {:route_count      (:route-count      analysis)
-            :aggregated_count (:aggregated-count analysis)
-            :savings          (:savings          analysis)
-            :groups           (mapv (fn [{:keys [summary routes]}]
-                                      {:summary summary :routes routes})
-                                    (:groups analysis))
-            :contained        (mapv (fn [{:keys [a b type]}]
-                                      (if (= type :a-contains-b)
-                                        {:container a :contained b}
-                                        {:container b :contained a}))
-                                    (:contained analysis))})
-          (display/print-analyze-result analysis))
-        (when (and (zero? (:savings analysis))
-                   (empty? (:contained analysis)))
-          (exit-empty!))))))
+               (try (slurp (first args))
+                    (catch Exception e (die (ex-message e)))))
+        routes (ops/parse-routes text)]
+    (when (empty? routes)
+      (die "No valid CIDR routes found in input"))
+    (let [analysis (ops/analyze-routes routes)]
+      (if *json?*
+        (display/print-json
+         {:route_count      (:route-count      analysis)
+          :aggregated_count (:aggregated-count analysis)
+          :savings          (:savings          analysis)
+          :groups           (mapv (fn [{:keys [summary routes]}]
+                                    {:summary summary :routes routes})
+                                  (:groups analysis))
+          :contained        (mapv (fn [{:keys [a b type]}]
+                                    (if (= type :a-contains-b)
+                                      {:container a :contained b}
+                                      {:container b :contained a}))
+                                  (:contained analysis))})
+        (display/print-analyze-result analysis))
+      (when (and (zero? (:savings analysis))
+                 (empty? (:contained analysis)))
+        (exit-empty!)))))
 
 (defn- handle-allocate [[parent hosts-str & used]]
   (when (nil? parent)    (die "allocate requires a parent CIDR and a host count"))

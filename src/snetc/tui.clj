@@ -35,11 +35,9 @@
 
 (defn- sh-output [cmd]
   (let [proc  (start-shell cmd)
-        out-f (future (slurp (.getInputStream ^Process proc)))
-        err-f (future (slurp (.getErrorStream ^Process proc)))
-        exit  (.waitFor ^Process proc)
-        out   @out-f
-        err   @err-f]
+        out   (slurp (.getInputStream ^Process proc))
+        err   (slurp (.getErrorStream ^Process proc))
+        exit  (.waitFor ^Process proc)]
     (when-not (zero? exit)
       (throw (ex-info (str "Command failed: " cmd "\n" (str/trim err))
                       {:cmd cmd :exit exit :err err})))
@@ -69,9 +67,8 @@
 
 (defn- sh! [cmd]
   (let [proc  (start-shell cmd)
-        err-f (future (slurp (.getErrorStream ^Process proc)))
-        exit  (.waitFor ^Process proc)
-        err   @err-f]
+        err   (slurp (.getErrorStream ^Process proc))
+        exit  (.waitFor ^Process proc)]
     (when-not (zero? exit)
       (throw (ex-info (str "Command failed: " cmd "\n" (str/trim err))
                       {:cmd cmd :exit exit :err err})))))
@@ -687,21 +684,21 @@
    (let [term (merge default-terminal terminal-overrides)
          planner (plan/new-plan parent-cidr)
          saved-mode ((:terminal-mode term))]
-     (with-open [tty-in ((:open-input term))]
+     (with-open [^InputStream tty-in ((:open-input term))]
        (try
          ((:enter-screen! term))
          ((:raw-mode! term))
          (loop [state (initial-state planner term)]
-           (let [[width height] ((:terminal-size term))]
-             (let [old-frame (:last-frame state)
-                   [state frame] (render-state state width height)
-                   output (render/diff-screen old-frame frame)]
-               ((:write! term) output)
-               (flush)
-               (let [key ((:read-key term) tty-in)]
+           (let [[width height] ((:terminal-size term))
+                 old-frame (:last-frame state)
+                 [state frame] (render-state state width height)
+                 output (render/diff-screen old-frame frame)]
+             ((:write! term) output)
+             (flush)
+             (let [key ((:read-key term) tty-in)]
                (if (#{:quit} key)
                  (:plan state)
-                 (recur (handle-key state key saved-mode)))))))
+                 (recur (handle-key state key saved-mode))))))
          (finally
            ((:set-terminal-mode! term) saved-mode)
            ((:leave-screen! term))))))))

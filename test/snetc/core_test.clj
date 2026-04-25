@@ -1,5 +1,6 @@
 (ns snetc.core-test
-  (:require [clojure.test  :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test  :refer [deftest is testing]]
             [clojure.data.json :as json]
             [snetc.core    :as core]
             [snetc.tui     :as tui]))
@@ -174,48 +175,48 @@
 (deftest short-output-test
   (testing "--short emits a single non-blank line"
     (let [out (with-out-str (#'core/handle-info "10.0.0.0/24" :short? true))]
-      (is (= 1 (count (filter (complement clojure.string/blank?)
-                               (clojure.string/split-lines out)))))))
+      (is (= 1 (count (filter (complement str/blank?)
+                               (str/split-lines out)))))))
 
   (testing "--short line contains CIDR, host range, host count, and mask"
     (let [out (with-out-str (#'core/handle-info "192.168.1.0/24" :short? true))]
-      (is (clojure.string/includes? out "192.168.1.0/24"))
-      (is (clojure.string/includes? out "192.168.1.1"))
-      (is (clojure.string/includes? out "192.168.1.254"))
-      (is (clojure.string/includes? out "254"))
-      (is (clojure.string/includes? out "255.255.255.0"))))
+      (is (str/includes? out "192.168.1.0/24"))
+      (is (str/includes? out "192.168.1.1"))
+      (is (str/includes? out "192.168.1.254"))
+      (is (str/includes? out "254"))
+      (is (str/includes? out "255.255.255.0"))))
 
   (testing "--short works for /32 (first-host == last-host)"
     (let [out (with-out-str (#'core/handle-info "10.0.0.1/32" :short? true))]
-      (is (clojure.string/includes? out "10.0.0.1/32"))
-      (is (clojure.string/includes? out "1 hosts")))))
+      (is (str/includes? out "10.0.0.1/32"))
+      (is (str/includes? out "1 hosts")))))
 
 ;;; ── handle-validate ──────────────────────────────────────────────────────────
 
 (deftest handle-validate-test
   (testing "all valid inputs → exit 0"
     (let [out  (with-out-str (#'core/handle-validate ["10.0.0.0/24" "192.168.1.1"]))
-          lines (clojure.string/split-lines out)]
-      (is (every? #(clojure.string/includes? % "ok")
-                  (filter #(clojure.string/includes? % "/") lines)))))
+          lines (str/split-lines out)]
+      (is (every? #(str/includes? % "ok")
+                  (filter #(str/includes? % "/") lines)))))
 
   (testing "any invalid input → calls exit-empty!"
     (is (exits-empty? #(with-out-str (#'core/handle-validate ["10.0.0.0/24" "bad"])))))
 
   (testing "valid CIDR type is reported"
     (let [out (with-out-str (#'core/handle-validate ["10.0.0.0/8"]))]
-      (is (clojure.string/includes? out "cidr"))))
+      (is (str/includes? out "cidr"))))
 
   (testing "valid IP type is reported"
     (let [out (with-out-str (#'core/handle-validate ["10.0.0.1"]))]
-      (is (clojure.string/includes? out "ip"))))
+      (is (str/includes? out "ip"))))
 
   (testing "invalid input shows FAIL and error message"
     (let [out (with-out-str
                 (binding [core/*exit-empty-fn* (fn [] (throw (ex-info "" {:exit 2})))]
                   (try (#'core/handle-validate ["badstuff"])
                        (catch clojure.lang.ExceptionInfo _ nil))))]
-      (is (clojure.string/includes? out "FAIL"))))
+      (is (str/includes? out "FAIL"))))
 
   (testing "--json emits structured array"
     (let [out  (with-out-str (binding [core/*json?* true
@@ -237,22 +238,22 @@
           out (with-out-str
                 (with-in-str stdin-text
                   (#'core/handle-classify [])))]
-      (is (clojure.string/includes? out "Private"))
-      (is (clojure.string/includes? out "Public"))))
+      (is (str/includes? out "Private"))
+      (is (str/includes? out "Public"))))
 
   (testing "overlaps reads from stdin when no args given"
     (let [stdin-text "10.0.0.0/8\n10.0.0.0/24\n"
           out (with-out-str
                 (with-in-str stdin-text
                   (#'core/handle-overlaps [])))]
-      (is (clojure.string/includes? out "A contains B"))))
+      (is (str/includes? out "A contains B"))))
 
   (testing "supernet reads from stdin when no args given"
     (let [stdin-text "10.0.0.0/24\n10.0.1.0/24\n"
           out (with-out-str
                 (with-in-str stdin-text
                   (#'core/handle-supernet [])))]
-      (is (clojure.string/includes? out "10.0.0.0/23"))))
+      (is (str/includes? out "10.0.0.0/23"))))
 
   (testing "validate reads from stdin when no args given"
     (let [stdin-text "10.0.0.1\nbad\n"
@@ -262,8 +263,8 @@
                     (with-in-str stdin-text
                       (#'core/handle-validate []))
                     (catch clojure.lang.ExceptionInfo _ nil))))]
-      (is (clojure.string/includes? out "ok"))
-      (is (clojure.string/includes? out "FAIL")))))
+      (is (str/includes? out "ok"))
+      (is (str/includes? out "FAIL")))))
 
 ;;; ── batch mode ───────────────────────────────────────────────────────────────
 
@@ -308,8 +309,8 @@
 (deftest handle-split-test
   (testing "text output lists all subnets"
     (let [o (with-out-str (#'core/handle-split "10.0.0.0/24" 25))]
-      (is (clojure.string/includes? o "10.0.0.0/25"))
-      (is (clojure.string/includes? o "10.0.0.128/25"))))
+      (is (str/includes? o "10.0.0.0/25"))
+      (is (str/includes? o "10.0.0.128/25"))))
 
   (testing "--json emits array of subnet objects"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -325,8 +326,8 @@
 (deftest handle-tree-flag-test
   (testing "text output contains root and children"
     (let [o (with-out-str (#'core/handle-tree-flag "10.0.0.0/24" 25))]
-      (is (clojure.string/includes? o "10.0.0.0/24"))
-      (is (clojure.string/includes? o "10.0.0.0/25"))))
+      (is (str/includes? o "10.0.0.0/24"))
+      (is (str/includes? o "10.0.0.0/25"))))
 
   (testing "--json emits tree structure"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -341,8 +342,8 @@
 (deftest handle-contains-test
   (testing "text output shows yes/no for IPs"
     (let [o (with-out-str (#'core/handle-contains ["10.0.0.0/24" "10.0.0.1" "192.168.0.1"]))]
-      (is (clojure.string/includes? o "yes"))
-      (is (clojure.string/includes? o "no"))))
+      (is (str/includes? o "yes"))
+      (is (str/includes? o "no"))))
 
   (testing "--json emits subnet and results array"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -357,12 +358,12 @@
 
   (testing "IPs read from stdin when only CIDR given"
     (let [o (with-out-str (with-in-str "10.0.0.1\n" (#'core/handle-contains ["10.0.0.0/24"])))]
-      (is (clojure.string/includes? o "yes")))))
+      (is (str/includes? o "yes")))))
 
 (deftest handle-free-test
   (testing "text output shows free blocks"
     (let [o (with-out-str (#'core/handle-free ["10.0.0.0/24" "10.0.0.0/25"]))]
-      (is (clojure.string/includes? o "10.0.0.128/25"))))
+      (is (str/includes? o "10.0.0.128/25"))))
 
   (testing "--json emits free block list"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -377,9 +378,9 @@
 (deftest handle-plan-test
   (testing "text output shows VLSM allocation table"
     (let [o (with-out-str (#'core/handle-plan ["192.168.0.0/22" "200" "50"]))]
-      (is (clojure.string/includes? o "VLSM plan"))
-      (is (clojure.string/includes? o "200"))
-      (is (clojure.string/includes? o "50"))))
+      (is (str/includes? o "VLSM plan"))
+      (is (str/includes? o "200"))
+      (is (str/includes? o "50"))))
 
   (testing "--json emits allocations array"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -396,7 +397,7 @@
 (deftest handle-lpm-test
   (testing "text output shows best match for each IP"
     (let [o (with-out-str (#'core/handle-lpm ["10.0.0.0/8" "10.0.0.0/24" "10.0.0.1"]))]
-      (is (clojure.string/includes? o "10.0.0.0/24"))))
+      (is (str/includes? o "10.0.0.0/24"))))
 
   (testing "--json emits routes and results"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -417,8 +418,8 @@
 (deftest handle-diff-test
   (testing "text output shows added and removed entries"
     (let [o (with-out-str (#'core/handle-diff ["10.0.0.0/24"] ["10.0.1.0/24"]))]
-      (is (clojure.string/includes? o "[+]"))
-      (is (clojure.string/includes? o "[-]"))))
+      (is (str/includes? o "[+]"))
+      (is (str/includes? o "[-]"))))
 
   (testing "--json emits added/removed/unchanged"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -439,12 +440,12 @@
 (deftest handle-range-test
   (testing "text output shows range and CIDR count"
     (let [o (with-out-str (#'core/handle-range ["10.0.0.0" "10.0.0.255"]))]
-      (is (clojure.string/includes? o "10.0.0.0/24"))
-      (is (clojure.string/includes? o "1 CIDR block"))))
+      (is (str/includes? o "10.0.0.0/24"))
+      (is (str/includes? o "1 CIDR block"))))
 
   (testing "+count syntax"
     (let [o (with-out-str (#'core/handle-range ["10.0.0.0" "+256"]))]
-      (is (clojure.string/includes? o "10.0.0.0/24"))))
+      (is (str/includes? o "10.0.0.0/24"))))
 
   (testing "--json emits start, end, cidrs"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -460,8 +461,8 @@
 (deftest handle-util-test
   (testing "text output shows utilization stats"
     (let [o (with-out-str (#'core/handle-util ["10.0.0.0/24" "10.0.0.0/25"]))]
-      (is (clojure.string/includes? o "10.0.0.0/24"))
-      (is (clojure.string/includes? o "Allocated"))))
+      (is (str/includes? o "10.0.0.0/24"))
+      (is (str/includes? o "Allocated"))))
 
   (testing "--json emits utilization map"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -475,7 +476,7 @@
     (let [o (with-out-str
               (with-in-str "10.0.0.0/24\n10.0.1.0/24\n"
                 (#'core/handle-analyze [])))]
-      (is (clojure.string/includes? o "route"))))
+      (is (str/includes? o "route"))))
 
   (testing "--json emits route analysis"
     (let [out  (with-out-str
@@ -493,7 +494,7 @@
 (deftest handle-allocate-test
   (testing "text output shows allocated CIDR"
     (let [o (with-out-str (#'core/handle-allocate ["10.0.0.0/24" "100"]))]
-      (is (clojure.string/includes? o "Allocated"))))
+      (is (str/includes? o "Allocated"))))
 
   (testing "--json emits cidr and requested"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -514,9 +515,9 @@
 (deftest handle-mask-success-test
   (testing "text output shows prefix, mask, and wildcard"
     (let [o (with-out-str (#'core/handle-mask ["255.255.255.0" "/16" "8"]))]
-      (is (clojure.string/includes? o "/24"))
-      (is (clojure.string/includes? o "/16"))
-      (is (clojure.string/includes? o "/8"))))
+      (is (str/includes? o "/24"))
+      (is (str/includes? o "/16"))
+      (is (str/includes? o "/8"))))
 
   (testing "--json emits array of conversions"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -528,15 +529,15 @@
 (deftest handle-adjacent-success-test
   (testing "next returns the adjacent block"
     (let [o (with-out-str (#'core/handle-adjacent ["10.0.0.0/24"] "next"))]
-      (is (clojure.string/includes? o "10.0.1.0/24"))))
+      (is (str/includes? o "10.0.1.0/24"))))
 
   (testing "prev returns the previous block"
     (let [o (with-out-str (#'core/handle-adjacent ["10.0.2.0/24"] "prev"))]
-      (is (clojure.string/includes? o "10.0.1.0/24"))))
+      (is (str/includes? o "10.0.1.0/24"))))
 
   (testing "next with n=3 skips three blocks"
     (let [o (with-out-str (#'core/handle-adjacent ["10.0.0.0/24" "3"] "next"))]
-      (is (clojure.string/includes? o "10.0.3.0/24"))))
+      (is (str/includes? o "10.0.3.0/24"))))
 
   (testing "--json emits direction and result"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -547,7 +548,7 @@
 (deftest handle-supernet-success-test
   (testing "text output shows supernet"
     (let [o (with-out-str (#'core/handle-supernet ["10.0.0.0/24" "10.0.1.0/24"]))]
-      (is (clojure.string/includes? o "10.0.0.0/23"))))
+      (is (str/includes? o "10.0.0.0/23"))))
 
   (testing "--json emits input and result"
     (let [out  (with-out-str (binding [core/*json?* true]
@@ -560,15 +561,15 @@
 (deftest handle-info-text-output-test
   (testing "normal text output includes all fields"
     (let [o (with-out-str (#'core/handle-info "192.168.1.0/24"))]
-      (is (clojure.string/includes? o "192.168.1.0/24"))
-      (is (clojure.string/includes? o "Network"))
-      (is (clojure.string/includes? o "Broadcast"))
-      (is (clojure.string/includes? o "255.255.255.0")))))
+      (is (str/includes? o "192.168.1.0/24"))
+      (is (str/includes? o "Network"))
+      (is (str/includes? o "Broadcast"))
+      (is (str/includes? o "255.255.255.0")))))
 
 (deftest handle-aggregate-text-output-test
   (testing "text output shows aggregated result"
     (let [o (with-out-str (#'core/handle-aggregate ["10.0.0.0/24" "10.0.1.0/24"]))]
-      (is (clojure.string/includes? o "10.0.0.0/23")))))
+      (is (str/includes? o "10.0.0.0/23")))))
 
 (deftest handle-contains-error-paths-test
   (testing "missing CIDR dies"
@@ -586,8 +587,8 @@
               (binding [core/*exit-empty-fn* (fn [] (throw (ex-info "" {:exit 2})))]
                 (try (#'core/handle-validate ["256.256.256.256/24"])
                      (catch clojure.lang.ExceptionInfo _ nil))))]
-      (is (clojure.string/includes? o "FAIL"))
-      (is (clojure.string/includes? o "cidr")))))
+      (is (str/includes? o "FAIL"))
+      (is (str/includes? o "cidr")))))
 
 ;;; ── -main dispatch ───────────────────────────────────────────────────────────
 
@@ -602,40 +603,40 @@
 (deftest main-dispatch-test
   (testing "CIDR arg dispatches to handle-info"
     (let [o (run-main "10.0.0.0/24")]
-      (is (clojure.string/includes? o "10.0.0.0/24"))
-      (is (clojure.string/includes? o "Network"))))
+      (is (str/includes? o "10.0.0.0/24"))
+      (is (str/includes? o "Network"))))
 
   (testing "classful IP arg infers prefix and shows info"
     (let [o (run-main "10.0.0.1")]
-      (is (clojure.string/includes? o "10.0.0.0/8"))
-      (is (clojure.string/includes? o "inferred"))))
+      (is (str/includes? o "10.0.0.0/8"))
+      (is (str/includes? o "inferred"))))
 
   (testing "class D/E IP dies with classful inference error"
     (is (thrown? clojure.lang.ExceptionInfo (run-main "224.0.0.1"))))
 
   (testing "--split option calls handle-split"
     (let [o (run-main "--split" "25" "10.0.0.0/24")]
-      (is (clojure.string/includes? o "10.0.0.0/25"))))
+      (is (str/includes? o "10.0.0.0/25"))))
 
   (testing "--tree option calls handle-tree-flag"
     (let [o (run-main "--tree" "25" "10.0.0.0/24")]
-      (is (clojure.string/includes? o "10.0.0.0/24"))))
+      (is (str/includes? o "10.0.0.0/24"))))
 
   (testing "subcommand dispatch routes to correct handler"
     (let [o (run-main "aggregate" "10.0.0.0/24" "10.0.1.0/24")]
-      (is (clojure.string/includes? o "10.0.0.0/23"))))
+      (is (str/includes? o "10.0.0.0/23"))))
 
   (testing "next subcommand via lambda dispatch"
     (let [o (run-main "next" "10.0.0.0/24")]
-      (is (clojure.string/includes? o "10.0.1.0/24"))))
+      (is (str/includes? o "10.0.1.0/24"))))
 
   (testing "prev subcommand via lambda dispatch"
     (let [o (run-main "prev" "10.0.2.0/24")]
-      (is (clojure.string/includes? o "10.0.1.0/24"))))
+      (is (str/includes? o "10.0.1.0/24"))))
 
   (testing "diff with -- separator"
     (let [o (run-main "diff" "10.0.0.0/24" "--" "10.0.1.0/24")]
-      (is (clojure.string/includes? o "[+]"))))
+      (is (str/includes? o "[+]"))))
 
   (testing "--json flag binds *json?*"
     (let [out  (run-main "--json" "info" "10.0.0.0/24")
@@ -644,8 +645,8 @@
 
   (testing "--short flag passes to handle-info"
     (let [o (run-main "--short" "10.0.0.0/24")]
-      (is (= 1 (count (filter (complement clojure.string/blank?)
-                               (clojure.string/split-lines o)))))))
+      (is (= 1 (count (filter (complement str/blank?)
+                               (str/split-lines o)))))))
 
   (testing "unknown subcommand prints usage and does not throw"
     ;; unknown command falls through to the else → (do (println usage) System/exit 1)
@@ -662,8 +663,8 @@
 (deftest free-no-allocations-test
   (testing "free with no allocations shows entire parent as free (text)"
     (let [o (with-out-str (#'core/handle-free ["10.0.0.0/24"]))]
-      (is (clojure.string/includes? o "10.0.0.0/24"))
-      (is (not (clojure.string/includes? o "excluding")))))
+      (is (str/includes? o "10.0.0.0/24"))
+      (is (not (str/includes? o "excluding")))))
 
   (testing "free with no allocations JSON returns allocated_count 0 and full parent free"
     (let [out  (with-out-str (binding [core/*json?* true]
