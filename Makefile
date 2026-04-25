@@ -1,4 +1,4 @@
-.PHONY: run run-dist test spec build native native-smoke bench bench-native clean container-build container-run release changelog
+.PHONY: run run-dist test spec build native native-smoke bench bench-native clean container-build container-run container-push release changelog
 
 JAR          := target/snetc-0.1.0.jar
 BINARY       := dist/snetc
@@ -12,7 +12,9 @@ NATIVE_IMAGE ?= $(shell \
 	else \
 		command -v native-image 2>/dev/null || echo native-image; \
 	fi)
-IMAGE        ?= snetc
+IMAGE        ?= pwbsladek/snetc
+TAG          ?= dev
+IMAGE_REF    = $(IMAGE):$(TAG)
 CTR          ?= $(shell command -v podman 2>/dev/null || echo docker)
 BUILD_INPUTS := deps.edn build.clj $(shell find src -type f)
 
@@ -62,11 +64,14 @@ $(BINARY): $(JAR) Makefile bin/smoke-native bin/bench-native
 		-H:+ReportExceptionStackTraces
 
 container-build:
-	$(CTR) build -f Containerfile -t $(IMAGE) .
+	$(CTR) build -f Containerfile -t $(IMAGE_REF) .
 
 # Usage: make container-run ARGS="classify 10.0.0.1 8.8.8.8"
 container-run:
-	$(CTR) run --rm $(IMAGE) $(ARGS)
+	$(CTR) run --rm $(IMAGE_REF) $(ARGS)
+
+container-push:
+	$(CTR) push $(IMAGE_REF)
 
 clean:
 	clojure -T:build clean

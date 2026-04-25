@@ -1,0 +1,130 @@
+name: Container
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Docker tag to publish
+        required: true
+        default: dev
+
+env:
+  IMAGE_NAME: pwbsladek/snetc
+
+jobs:
+  build:
+    name: Build image (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-22.04
+            artifact: linux-amd64
+          - platform: linux/arm64
+            runner: ubuntu-22.04-arm
+            artifact: linux-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to Docker Hardened Images
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DHI_USERNAME || secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DHI_TOKEN || secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Containerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=container-${{ matrix.artifact }}
+          cache-to: type=gha,scope=container-${{ matrix.artifact }},mode=max
+          provenance: true
+          sbom: true
+
+      - name: Smoke test pushed digest
+        run: docker run --rm "${IMAGE_NAME}@${{ steps.build.outputs.digest }}" --help
+
+      - name: Export digest
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish multi-arch tag
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            ref="${GITHUB_REF_NAME}"
+            version="${ref#v}"
+            {
+              echo "tags<<EOF"
+              echo "-t ${IMAGE_NAME}:${ref}"
+              echo "-t ${IMAGE_NAME}:${version}"
+              echo "-t ${IMAGE_NAME}:latest"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "tags<<EOF"
+              echo "-t ${IMAGE_NAME}:${INPUT_TAG}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            ${{ steps.meta.outputs.tags }} \
+            $(printf "${IMAGE_NAME}@sha256:%s " *)
