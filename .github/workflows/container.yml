@@ -24,10 +24,24 @@ jobs:
         include:
           - platform: linux/amd64
             runner: ubuntu-22.04
-            artifact: linux-amd64
+            artifact: runtime-linux-amd64
+            variant: runtime
+            target: runtime
           - platform: linux/arm64
             runner: ubuntu-22.04-arm
-            artifact: linux-arm64
+            artifact: runtime-linux-arm64
+            variant: runtime
+            target: runtime
+          - platform: linux/amd64
+            runner: ubuntu-22.04
+            artifact: tui-linux-amd64
+            variant: tui
+            target: tui-runtime
+          - platform: linux/arm64
+            runner: ubuntu-22.04-arm
+            artifact: tui-linux-arm64
+            variant: tui
+            target: tui-runtime
 
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +68,7 @@ jobs:
         with:
           context: .
           file: Containerfile
+          target: ${{ matrix.target }}
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=container-${{ matrix.artifact }}
@@ -66,15 +81,15 @@ jobs:
 
       - name: Export digest
         run: |
-          mkdir -p "${RUNNER_TEMP}/digests"
+          mkdir -p "${RUNNER_TEMP}/digests/${{ matrix.variant }}"
           digest="${{ steps.build.outputs.digest }}"
-          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+          touch "${RUNNER_TEMP}/digests/${{ matrix.variant }}/${digest#sha256:}"
 
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
           name: digests-${{ matrix.artifact }}
-          path: ${{ runner.temp }}/digests/*
+          path: ${{ runner.temp }}/digests/${{ matrix.variant }}/*
           if-no-files-found: error
           retention-days: 1
 
@@ -83,11 +98,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Download digests
+      - name: Download runtime digests
         uses: actions/download-artifact@v4
         with:
-          path: ${{ runner.temp }}/digests
-          pattern: digests-*
+          path: ${{ runner.temp }}/digests/runtime
+          pattern: digests-runtime-*
+          merge-multiple: true
+
+      - name: Download TUI digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests/tui
+          pattern: digests-tui-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -99,8 +121,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Create manifest list
-        working-directory: ${{ runner.temp }}/digests
+      - name: Create runtime manifest list
+        working-directory: ${{ runner.temp }}/digests/runtime
         env:
           INPUT_TAG: ${{ inputs.tag || 'dev' }}
         run: |
@@ -119,6 +141,36 @@ jobs:
           digests=(*)
           if [ "${#digests[@]}" -eq 0 ]; then
             echo "No digest artifacts found in $(pwd)" >&2
+            exit 1
+          fi
+
+          sources=()
+          for digest in "${digests[@]}"; do
+            sources+=("${IMAGE_NAME}@sha256:${digest}")
+          done
+
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+      - name: Create TUI manifest list
+        working-directory: ${{ runner.temp }}/digests/tui
+        env:
+          INPUT_TAG: ${{ inputs.tag || 'dev' }}
+        run: |
+          set -euo pipefail
+
+          tags=()
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            ref="${GITHUB_REF_NAME}"
+            version="${ref#v}"
+            tags=(-t "${IMAGE_NAME}:${ref}-tui" -t "${IMAGE_NAME}:${version}-tui" -t "${IMAGE_NAME}:latest-tui")
+          else
+            tags=(-t "${IMAGE_NAME}:${INPUT_TAG}-tui")
+          fi
+
+          shopt -s nullglob
+          digests=(*)
+          if [ "${#digests[@]}" -eq 0 ]; then
+            echo "No TUI digest artifacts found in $(pwd)" >&2
             exit 1
           fi
 

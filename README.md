@@ -64,7 +64,17 @@ make container-build TAG=tagname
 make container-push TAG=tagname
 ```
 
-Tagged releases publish multi-architecture images to Docker Hub as `pwbsladek/snetc:<git-tag>`, `pwbsladek/snetc:<version-without-v>`, and `pwbsladek/snetc:latest`. The workflow expects `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; set `DHI_USERNAME` and `DHI_TOKEN` too if your Docker Hardened Images access uses separate credentials.
+The default image is intended for non-interactive commands. The interactive `snetc tree` TUI needs a shell and `stty`, so releases also publish a TUI-capable Docker Hardened Images Debian Base variant:
+
+```sh
+docker run --rm -it pwbsladek/snetc:latest-tui tree 10.0.0.0/24
+make container-build-tui TAG=tagname
+make container-run-tui TAG=tagname CIDR=10.0.0.0/24
+```
+
+The `-tui` image is still based on Docker Hardened Images, but it is not distroless because it includes the shell/coreutils needed by the terminal UI.
+
+Tagged releases publish multi-architecture images to Docker Hub as `pwbsladek/snetc:<git-tag>`, `pwbsladek/snetc:<version-without-v>`, and `pwbsladek/snetc:latest`. TUI variants are published as `pwbsladek/snetc:<git-tag>-tui`, `pwbsladek/snetc:<version-without-v>-tui`, and `pwbsladek/snetc:latest-tui`. The workflow expects `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; set `DHI_USERNAME` and `DHI_TOKEN` too if your Docker Hardened Images access uses separate credentials.
 
 ## Usage
 
@@ -271,7 +281,7 @@ snetc tree: 10.0.0.0/16  (1 leaf subnet)
 ----------------------------------------------------------------------------------------------
 >     1  10.0.0.0/16         255.255.0.0        10.0.0.0..10.0.255.255            65534  s
 
-up/down or k/j select  s/enter split  J/backspace join  l label  u undo  r redo  e export  p print  q quit
+up/down k/j  s split  J join  S split-to  H hosts  f filter  / search  : cmd  i import  e export  p print  q quit
 Ready
 ```
 
@@ -286,7 +296,7 @@ snetc tree: 10.0.0.0/16  (3 leaf subnets)
       2  10.0.128.0/18       255.255.192.0      10.0.128.0..10.0.191.255          16382  s/j  App tier
 >     3  10.0.192.0/18       255.255.192.0      10.0.192.0..10.0.255.255          16382  s/j  DB tier
 
-up/down or k/j select  s/enter split  J/backspace join  l label  u undo  r redo  e export  p print  q quit
+up/down k/j  s split  J join  S split-to  H hosts  f filter  / search  : cmd  i import  e export  p print  q quit
 Labeled 10.0.192.0/18
 ```
 
@@ -296,17 +306,46 @@ The `Act` column shows what operations are available on the selected row: `s` (c
 
 | Key | Action |
 |---|---|
-| `↑` / `k` | Move selection up |
-| `↓` / `j` | Move selection down |
+| `↑` / `k` / `←` | Move selection up |
+| `↓` / `j` / `→` / `Tab` | Move selection down |
+| `g` / `G` | Jump to first / last visible row |
+| `Page Up` / `Page Down` | Move by one visible page |
 | `s` / `Enter` / `Space` | Split selected subnet into two equal halves |
-| `J` / `Backspace` | Join selected subnet with its sibling back into their parent |
-| `l` | Label selected subnet (blank input clears the label) |
-| `/` | Jump to a CIDR by address |
-| `u` | Undo |
-| `r` | Redo |
-| `e` | Export plan — prompts for format: `edn` / `json` / `yaml` |
-| `p` | Write leaf CIDRs (one per line) to `snetc-leaves.txt` |
-| `q` / `Ctrl-C` | Quit |
+| `J` / `Backspace` / `Ctrl-H` | Join selected subnet with its sibling back into their parent |
+| `S` | Split selected subnet down to a prompted prefix, for example `/26` |
+| `H` | Split selected subnet to the smallest prefix that fits a prompted host count |
+| `l` | Label selected subnet; blank input clears the label |
+| `/` | Search and select by CIDR, contained IP, prefix, or label |
+| `f` / `F` | Filter rows by CIDR, contained IP, prefix, or label |
+| `Escape` | Clear the active filter |
+| `u` / `U` | Undo |
+| `r` / `R` | Redo |
+| `:` | Open the command palette |
+| `i` | Import a saved plan from EDN or JSON |
+| `e` | Export plan; prompts for `edn`, `json`, or `yaml`, with an optional path |
+| `p` / `P` | Write leaf CIDRs, one per line, to `snetc-leaves.txt` |
+| `q` / `Q` / `Ctrl-C` | Quit |
+
+Search and filter queries accept plain text, CIDRs, IP addresses, `/N` prefix shortcuts, and `@label` label shortcuts.
+
+#### Command palette
+
+Press `:` to run typed commands. Long forms and aliases are both supported:
+
+| Command | Action |
+|---|---|
+| `split /N` / `s /N` | Split selected subnet down to prefix `/N` |
+| `hosts N` / `h N` | Split selected subnet for `N` usable hosts |
+| `join /N` / `j /N` | Join selected subnet upward toward prefix `/N` |
+| `filter Q` / `f Q` | Filter rows by query `Q` |
+| `clear` / `x` | Clear the active filter |
+| `search Q` | Select the first row matching query `Q` |
+| `label TEXT` | Set or clear the selected subnet label |
+| `import PATH` | Import a saved EDN or JSON plan |
+| `export [edn|json|yaml] [PATH]` | Export the current plan, optionally to `PATH` |
+| `print` | Write all leaf CIDRs to `snetc-leaves.txt` |
+| `print-selected` | Write the selected CIDR to `snetc-selected.txt` |
+| `help` / `?` | Show command help |
 
 #### Export formats
 
