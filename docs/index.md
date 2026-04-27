@@ -186,20 +186,40 @@ snetc tree: 10.0.0.0/16  (3 leaf subnets)
       2  10.0.128.0/18       255.255.192.0      10.0.128.0..10.0.191.255       16382  s/j  App tier
 >     3  10.0.192.0/18       255.255.192.0      10.0.192.0..10.0.255.255       16382  s/j  DB tier
 
-up/down  s split  J join  l label  u undo  r redo  e export  p print  q quit
+up/down k/j  s split  J join  S split-to  H hosts  f filter  / search  : cmd  i import  e export  p print  q quit
 ```
 
 | Key | Action |
 |---|---|
 | Arrow keys or `j`/`k` | Move selection |
-| `s` / Enter | Split subnet |
+| `g` / `G` | Jump to first / last visible row |
+| `Page Up` / `Page Down` | Move by one visible page |
+| `s` / Enter / Space | Split subnet |
 | `J` / Backspace | Join with sibling |
+| `S` | Split to a prompted prefix |
+| `H` | Split for a prompted host count |
 | `l` | Label subnet |
-| `/` | Jump to CIDR |
+| `/` | Search by CIDR, IP, prefix, or label |
+| `f` | Filter by CIDR, IP, prefix, or label |
+| Escape | Clear filter |
 | `u` / `r` | Undo / redo |
-| `e` | Export (prompts: edn / json / yaml) |
+| `:` | Open command palette |
+| `i` | Import EDN or JSON plan |
+| `e` | Export to EDN, JSON, or YAML |
 | `p` | Write leaf CIDRs to file |
-| `q` | Quit |
+| `q` / Ctrl-C | Quit |
+
+Command palette examples:
+
+```text
+: s /26
+: h 62
+: j /24
+: f /26
+: export json plan.json
+: import plan.json
+: print-selected
+```
 
 ---
 
