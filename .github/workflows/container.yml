@@ -99,25 +99,25 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compute tags
-        id: meta
+      - name: Create manifest list
+        working-directory: ${{ runner.temp }}/digests
         env:
-          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_TAG: ${{ inputs.tag || 'dev' }}
         run: |
+          set -euo pipefail
+
+          tags=()
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             ref="${GITHUB_REF_NAME}"
             version="${ref#v}"
-            echo "tags=-t ${IMAGE_NAME}:${ref} -t ${IMAGE_NAME}:${version} -t ${IMAGE_NAME}:latest" >> "$GITHUB_OUTPUT"
+            tags=(-t "${IMAGE_NAME}:${ref}" -t "${IMAGE_NAME}:${version}" -t "${IMAGE_NAME}:latest")
           else
-            echo "tags=-t ${IMAGE_NAME}:${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+            tags=(-t "${IMAGE_NAME}:${INPUT_TAG}")
           fi
 
-      - name: Create manifest list
-        working-directory: ${{ runner.temp }}/digests
-        run: |
-          set -euo pipefail
+          shopt -s nullglob
           digests=(*)
-          if [ "${digests[0]}" = "*" ]; then
+          if [ "${#digests[@]}" -eq 0 ]; then
             echo "No digest artifacts found in $(pwd)" >&2
             exit 1
           fi
@@ -127,6 +127,4 @@ jobs:
             sources+=("${IMAGE_NAME}@sha256:${digest}")
           done
 
-          docker buildx imagetools create \
-            ${{ steps.meta.outputs.tags }} \
-            "${sources[@]}"
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
