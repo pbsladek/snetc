@@ -3,6 +3,7 @@
             [clojure.spec.alpha      :as s]
             [clojure.spec.test.alpha :as stest]
             [snetc.spec     :as spec]
+            [snetc.addr     :as addr]
             [snetc.ip       :as ip]
             [snetc.subnet   :as subnet]
             [snetc.classify :as classify]
@@ -45,7 +46,18 @@
     (is (s/valid?     ::spec/cidr-str "1.2.3.4/32"))
     (is (not (s/valid? ::spec/cidr-str "10.0.0.0/33")))
     (is (not (s/valid? ::spec/cidr-str "10.0.0.0")))
-    (is (not (s/valid? ::spec/cidr-str "010.0.0.0/8")))))
+    (is (not (s/valid? ::spec/cidr-str "010.0.0.0/8"))))
+
+  (testing "address specs include IPv6"
+    (is (s/valid?     ::spec/ipv6-str "2001:db8::1"))
+    (is (s/valid?     ::spec/addr-str "10.0.0.1"))
+    (is (s/valid?     ::spec/addr-str "2001:db8::1"))
+    (is (s/valid?     ::spec/addr-cidr-str "10.0.0.0/24"))
+    (is (s/valid?     ::spec/addr-cidr-str "2001:db8::/64"))
+    (is (s/valid?     ::spec/same-family-cidrs ["2001:db8::/64" "2001:db8:0:1::/64"]))
+    (is (not (s/valid? ::spec/same-family-cidrs ["10.0.0.0/24" "2001:db8::/64"])))
+    (is (not (s/valid? ::spec/ipv6-str "2001:db8::g")))
+    (is (not (s/valid? ::spec/addr-cidr-str "2001:db8::/129")))))
 
 (deftest compound-specs
   (testing "subnet-info-map"
@@ -54,6 +66,18 @@
                    :first-host "192.168.0.1" :last-host "192.168.3.254"
                    :hosts 1022 :mask "255.255.252.0" :wildcard "0.0.3.255"
                    :prefix 22 :cidr "192.168.0.0/22"})))
+
+  (testing "addr-info-map supports IPv4 and IPv6"
+    (is (s/valid? ::spec/addr-info-map (addr/subnet-info "10.0.0.0/24")))
+    (is (s/valid? ::spec/addr-info-map (addr/subnet-info "2001:db8::/64"))))
+
+  (testing "addr-range-map supports IPv4 and IPv6 ranges"
+    (is (s/valid? ::spec/addr-range-map (addr/cidr->range "10.0.0.0/24")))
+    (is (s/valid? ::spec/addr-range-map (addr/cidr->range "2001:db8::/64"))))
+
+  (testing "prefix-allocation supports IPv6 prefix plans"
+    (is (s/valid? ::spec/prefix-allocation
+                  (first (ops/plan-prefixes "2001:db8::/60" [64])))))
 
   (testing "classify-result without :bcast-name"
     (is (s/valid? ::spec/classify-result
@@ -67,13 +91,40 @@
 
   (testing "overlap-result"
     (is (s/valid? ::spec/overlap-result
-                  {:a "10.0.0.0/8" :b "10.0.0.0/24" :type :a-contains-b})))
+                  {:a "10.0.0.0/8" :b "10.0.0.0/24" :type :a-contains-b}))
+    (is (s/valid? ::spec/overlap-result
+                  {:a "2001:db8::/63" :b "2001:db8::/64" :type :a-contains-b})))
 
   (testing "cidr-diff-result"
     (is (s/valid? ::spec/cidr-diff-result
                   {:added ["10.0.1.0/24"] :removed [] :unchanged ["10.0.0.0/24"]}))))
 
 ;; ── Generative function checks ────────────────────────────────────────────────
+
+(deftest addr-generative
+  (testing "valid-prefix? returns boolean"
+    (is (check-sym `addr/valid-prefix?)))
+
+  (testing "parse-ip returns family-aware address maps"
+    (is (check-sym `addr/parse-ip)))
+
+  (testing "parse-cidr returns family-aware CIDR maps"
+    (is (check-sym `addr/parse-cidr)))
+
+  (testing "subnet-info returns family-aware subnet info"
+    (is (check-sym `addr/subnet-info)))
+
+  (testing "cidr->range returns family-aware inclusive ranges"
+    (is (check-sym `addr/cidr->range)))
+
+  (testing "range->cidrs returns valid CIDR vectors"
+    (is (check-sym `addr/range->cidrs)))
+
+  (testing "address->text returns valid address strings"
+    (is (check-sym `addr/address->text)))
+
+  (testing "ip-in-cidr? returns boolean for matching families"
+    (is (check-sym `addr/ip-in-cidr?))))
 
 (deftest ip-generative
   (testing "ip->long / long->ip round-trip"
@@ -122,6 +173,9 @@
   (testing "aggregate returns valid CIDRs"
     (is (check-sym `ops/aggregate)))
 
+  (testing "free-space returns valid CIDRs"
+    (is (check-sym `ops/free-space)))
+
   (testing "cidr-diff returns well-typed result"
     (is (check-sym `ops/cidr-diff)))
 
@@ -129,4 +183,16 @@
     (is (check-sym `ops/find-overlaps)))
 
   (testing "longest-prefix-match returns a CIDR string or nil"
-    (is (check-sym `ops/longest-prefix-match))))
+    (is (check-sym `ops/longest-prefix-match)))
+
+  (testing "supernet returns a valid covering CIDR"
+    (is (check-sym `ops/supernet)))
+
+  (testing "next-available-prefix returns a valid CIDR or nil"
+    (is (check-sym `ops/next-available-prefix)))
+
+  (testing "plan-prefixes returns prefix allocation maps"
+    (is (check-sym `ops/plan-prefixes)))
+
+  (testing "utilization-info returns allocation statistics"
+    (is (check-sym `ops/utilization-info))))

@@ -6,7 +6,7 @@ nav_order: 1
 
 # snetc
 
-IPv4 subnet calculator for the command line. Computes subnet info, splits, trees, aggregation, VLSM, overlaps, diffs, LPM routing, RFC classification, and more — as a fast native binary with no runtime required.
+IPv4 and IPv6 subnet calculator for the command line. Computes subnet info, aggregation, allocation plans, overlaps, diffs, LPM routing, RFC classification, and more — as a fast native binary with no runtime required.
 
 **[View on GitHub](https://github.com/pbsladek/snetc)** · **[Latest release](https://github.com/pbsladek/snetc/releases/latest)**
 
@@ -50,14 +50,15 @@ sudo cp dist/snetc /usr/local/bin/snetc
 ## Commands
 
 ```
-snetc <cidr>                              Subnet info
-snetc <cidr> --split <prefix>            List all /<prefix> subnets
-snetc <cidr> --tree  <prefix>            Show subnet split tree
+snetc <cidr>                              IPv4 or IPv6 subnet info
+snetc <cidr> --split <prefix>            List all /<prefix> IPv4 subnets
+snetc <cidr> --tree  <prefix>            Show IPv4 subnet split tree
 snetc aggregate <cidr> [...]             Aggregate to minimal covering set
 snetc aggregate                          Read CIDRs from stdin
 snetc contains <cidr> <ip> [...]         Check IP containment
 snetc free <parent> <alloc> [...]        Show unallocated space
-snetc plan <parent> <hosts> [...]        VLSM: allocate by host count
+snetc allocate <parent> <hosts|/prefix> [...used]  Next IPv4 host block or IPv6 prefix
+snetc plan <parent> <hosts|/prefix> [...] IPv4 VLSM by hosts; IPv6 by prefix
 snetc overlaps <cidr> [...]              Detect overlapping networks
 snetc lpm <cidr|ip> ...                  Longest-prefix match
 snetc diff <cidr> ... -- <cidr> ...      Diff two CIDR sets
@@ -65,8 +66,12 @@ snetc classify <ip-or-cidr> ...          RFC classification
 snetc range <start> <end|+count>         IP range to minimal CIDRs
 snetc util <parent> <alloc> [...]        Address space utilisation map
 snetc analyze [<file>]                   Route table analysis
-snetc tree <cidr>                        Interactive subnet planner
+snetc tree <cidr>                        Interactive IPv4 subnet planner
 ```
+
+Non-interactive set operations support IPv4 and IPv6, but each command expects
+one address family per invocation. The interactive tree planner and `--split`
+remain IPv4-only.
 
 ---
 
@@ -85,6 +90,19 @@ $ snetc 192.168.0.0/22
   Hosts:             1022
   Subnet Mask:       255.255.252.0
   Wildcard Mask:     0.0.3.255
+```
+
+IPv6 omits IPv4-only fields such as broadcast, masks, wildcards, and usable host
+counts:
+
+```
+$ snetc 2001:db8::1/64
+
+2001:db8::/64
+  Network:           2001:db8::
+  First Address:     2001:db8::
+  Last Address:      2001:db8::ffff:ffff:ffff:ffff
+  Addresses:         18446744073709551616
 ```
 
 ### Utilisation map
@@ -136,6 +154,19 @@ VLSM plan for 10.0.0.0/24
   1    100          10.0.0.0/25          255.255.255.128    10.0.0.1         10.0.0.126       126
   2    50           10.0.0.128/26        255.255.255.192    10.0.0.129       10.0.0.190       62
   3    20           10.0.0.192/27        255.255.255.224    10.0.0.193       10.0.0.222       30
+```
+
+For IPv6, allocation planning uses prefix requests:
+
+```
+$ snetc plan 2001:db8::/60 /64 /64
+
+IPv6 prefix plan for 2001:db8::/60
+
+  #    Requested    Allocated                                   Addresses
+--------------------------------------------------------------------------------
+  1    /64          2001:db8::/64                               18446744073709551616
+  2    /64          2001:db8:0:1::/64                           18446744073709551616
 ```
 
 ### Aggregate

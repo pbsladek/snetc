@@ -102,6 +102,45 @@
     (is (= {:name "Public" :rfc ""}
            (select-keys (classify "8.8.8.8") [:name :rfc])))))
 
+(deftest classify-ipv6-special-ranges-test
+  (testing "IPv6 special ranges"
+    (is (= {:family :ipv6 :name "Loopback" :rfc "RFC 4291"}
+           (select-keys (classify "::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "Unspecified" :rfc "RFC 4291"}
+           (select-keys (classify "::") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "IPv4-mapped" :rfc "RFC 4291"}
+           (select-keys (classify "::ffff:192.0.2.1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "IPv4-IPv6 Translation" :rfc "RFC 6052"}
+           (select-keys (classify "64:ff9b::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "Discard-Only" :rfc "RFC 6666"}
+           (select-keys (classify "100::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "AMT" :rfc "RFC 7450"}
+           (select-keys (classify "2001:3::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "ORCHIDv2" :rfc "RFC 7343"}
+           (select-keys (classify "2001:20::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "Documentation" :rfc "RFC 3849"}
+           (select-keys (classify "2001:db8::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "Documentation" :rfc "RFC 9637"}
+           (select-keys (classify "3fff::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "6to4" :rfc "RFC 3056"}
+           (select-keys (classify "2002::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "Unique Local" :rfc "RFC 4193"}
+           (select-keys (classify "fc00::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "Link-Local" :rfc "RFC 4291"}
+           (select-keys (classify "fe80::1") [:family :name :rfc])))
+    (is (= {:family :ipv6 :name "Multicast" :rfc "RFC 4291/RFC 3307"}
+           (select-keys (classify "ff00::1") [:family :name :rfc]))))
+
+  (testing "IANA reserved address-space ranges are not public"
+    (is (= {:family :ipv6 :name "Reserved by IETF" :rfc "RFC 3513/RFC 4291"}
+           (select-keys (classify "4000::1") [:family :name :rfc])))
+    (is (false? (:routable? (classify "100:0:0:2::1")))))
+
+  (testing "IPv6 public addresses remain routable"
+    (let [r (classify "2001:4860:4860::8888")]
+      (is (= "Public" (:name r)))
+      (is (true? (:routable? r))))))
+
 ;;; ── routable? flag ───────────────────────────────────────────────────────────
 
 (deftest classify-routable-test
@@ -148,3 +187,13 @@
 
   (testing ":bcast-name is absent when :spans? is false"
     (is (not (contains? (classify "10.0.0.0/8") :bcast-name)))))
+
+(deftest classify-ipv6-cidr-test
+  (testing "IPv6 CIDRs classify by network address and detect embedded category changes"
+    (let [r (classify "2001:db8::/31")]
+      (is (= :ipv6 (:family r)))
+      (is (= "Documentation" (:name r)))
+      (is (true? (:spans? r)))
+      (is (= ["Documentation" "Public"] (mapv :name (:category-path r))))
+      (is (= "Public" (:bcast-name r)))
+      (is (false? (:routable? r))))))

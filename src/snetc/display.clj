@@ -1,47 +1,52 @@
 (ns snetc.display
   "Terminal display: all human-readable output for snetc commands."
   (:require [clojure.string   :as str]
-            [clojure.data.json :as json]
-            [snetc.ip         :as ip]
-            [snetc.subnet     :as subnet]))
+            [clojure.data.json :as json]))
 
 (defn- label-row [label value]
   (format "  %-18s %s" (str label ":") value))
-
-(defn- ip-role
-  "Returns :network, :broadcast, or :host for ip relative to info."
-  [ip info]
-  (cond
-    (= ip (:network   info)) :network
-    (= ip (:broadcast info)) :broadcast
-    :else                    :host))
 
 (defn print-subnet-info
   "Prints a formatted summary of info to stdout."
   [info]
   (println (str "\n" (:cidr info)))
   (println (label-row "Network"       (:network    info)))
-  (when (:broadcast info)
-    (println (label-row "Broadcast"   (:broadcast  info))))
-  (println (label-row "First Host"    (:first-host info)))
-  (println (label-row "Last Host"     (:last-host  info)))
-  (println (label-row "Hosts"         (:hosts      info)))
-  (println (label-row "Subnet Mask"   (:mask       info)))
-  (println (label-row "Wildcard Mask" (:wildcard   info)))
+  (if (= :ipv6 (:family info))
+    (do
+      (println (label-row "First Address" (:first-address info)))
+      (println (label-row "Last Address"  (:last-address  info)))
+      (println (label-row "Addresses"     (:addresses     info))))
+    (do
+      (when (:broadcast info)
+        (println (label-row "Broadcast"   (:broadcast  info))))
+      (println (label-row "First Host"    (:first-host info)))
+      (println (label-row "Last Host"     (:last-host  info)))
+      (println (label-row "Hosts"         (:hosts      info)))
+      (println (label-row "Subnet Mask"   (:mask       info)))
+      (println (label-row "Wildcard Mask" (:wildcard   info)))))
   (println))
 
 (defn print-subnet-info-json
   "Prints subnet info as JSON to stdout."
   [info]
-  (println (json/write-str (cond-> {:cidr       (:cidr      info)
-                                    :network    (:network   info)
-                                    :first_host (:first-host info)
-                                    :last_host  (:last-host  info)
-                                    :hosts      (:hosts     info)
-                                    :mask       (:mask      info)
-                                    :wildcard   (:wildcard  info)
-                                    :prefix     (:prefix    info)}
-                              (:broadcast info) (assoc :broadcast (:broadcast info))))))
+  (println (json/write-str
+            (if (= :ipv6 (:family info))
+              {:family        "ipv6"
+               :cidr          (:cidr info)
+               :network       (:network info)
+               :first_address (:first-address info)
+               :last_address  (:last-address info)
+               :addresses     (str (:addresses info))
+               :prefix        (:prefix info)}
+              (cond-> {:cidr       (:cidr      info)
+                       :network    (:network   info)
+                       :first_host (:first-host info)
+                       :last_host  (:last-host  info)
+                       :hosts      (:hosts     info)
+                       :mask       (:mask      info)
+                       :wildcard   (:wildcard  info)
+                       :prefix     (:prefix    info)}
+                (:broadcast info) (assoc :broadcast (:broadcast info)))))))
 
 (defn print-split-table
   "Prints a table of subnets to stdout."
@@ -96,21 +101,19 @@
   (println))
 
 (defn print-contains-result
-  "Prints a containment table for ips against info (pre-computed subnet-info map) to stdout."
-  [info ips]
+  "Prints a containment table from pre-computed result maps."
+  [info results]
   (let [cidr (:cidr info)
         fmt  "  %-20s %-6s %s"]
     (println (str "\nSubnet: " cidr "\n"))
     (println (format fmt "IP" "Match" "Note"))
     (println (apply str (repeat 50 "-")))
-    (doseq [ip ips]
-      (let [in?  (subnet/ip-in-cidr? ip cidr)
-            role (when in? (ip-role ip info))
-            note (case role
-                   :network   "(network address)"
-                   :broadcast "(broadcast address)"
+    (doseq [result results]
+      (let [note (case (:role result)
+                   (:network "network")     "(network address)"
+                   (:broadcast "broadcast") "(broadcast address)"
                    nil)]
-        (println (format fmt ip (if in? "yes" "no") (or note "")))))
+        (println (format fmt (:ip result) (if (:match result) "yes" "no") (or note "")))))
     (println)))
 
 (defn print-free-result
@@ -123,12 +126,19 @@
                 ":\n"))
   (if (empty? result-infos)
     (println "  (none – fully allocated)\n")
-    (let [fmt "  %-20s %-18s %s"]
-      (println (format fmt "CIDR" "Subnet Mask" "Hosts"))
-      (println (apply str (repeat 50 "-")))
-      (doseq [info result-infos]
-        (println (format fmt (:cidr info) (:mask info) (:hosts info))))
-      (println))))
+    (if (= :ipv6 (:family (first result-infos)))
+      (let [fmt "  %-43s %s"]
+        (println (format fmt "CIDR" "Addresses"))
+        (println (apply str (repeat 70 "-")))
+        (doseq [info result-infos]
+          (println (format fmt (:cidr info) (:addresses info))))
+        (println))
+      (let [fmt "  %-20s %-18s %s"]
+        (println (format fmt "CIDR" "Subnet Mask" "Hosts"))
+        (println (apply str (repeat 50 "-")))
+        (doseq [info result-infos]
+          (println (format fmt (:cidr info) (:mask info) (:hosts info))))
+        (println)))))
 
 (defn print-diff-result
   "Prints a sorted diff of before-cidrs vs after-cidrs to stdout.
@@ -152,12 +162,13 @@
   [classifications]
   (let [;; Compute category column width dynamically so spanning CIDRs like
         ;; "Documentation TEST-NET-3 → Private" don't overflow into the RFC column.
-        cat-width (apply max 8
-                         (map #(count (category-label %)) classifications))
-        fmt (str "  %-22s %-" (+ cat-width 2) "s %-12s %s")]
+        input-width (apply max 22 (map #(count (:input %)) classifications))
+        cat-width   (apply max 8
+                           (map #(count (category-label %)) classifications))
+        fmt         (str "  %-" input-width "s %-" (+ cat-width 2) "s %-12s %s")]
     (println)
     (println (format fmt "Input" "Category" "RFC" "Routable"))
-    (println (apply str (repeat (+ 22 cat-width 30) "-")))
+    (println (apply str (repeat (+ input-width cat-width 30) "-")))
     (doseq [{:keys [input rfc routable?] :as classification} classifications]
       (let [rfc-str (if (str/blank? rfc) "-" rfc)]
         (println (format fmt input (category-label classification) rfc-str (if routable? "yes" "no")))))
@@ -165,30 +176,41 @@
 
 (defn print-range-result
   "Prints the minimal CIDR list for the range start-ip to end-ip to stdout."
-  [start-ip end-ip cidrs]
-  (let [total (inc (- (ip/ip->long end-ip) (ip/ip->long start-ip)))]
-    (println (format "\nRange: %s – %s  (%d address%s)\n"
-                     start-ip end-ip total (if (= 1 total) "" "es")))
-    (doseq [c cidrs] (println (str "  " c)))
-    (println (format "\n  %d CIDR block(s)\n" (count cidrs)))))
+  [start-ip end-ip total cidrs]
+  (println (format "\nRange: %s – %s  (%s address%s)\n"
+                   start-ip end-ip total (if (= 1 total) "" "es")))
+  (doseq [c cidrs] (println (str "  " c)))
+  (println (format "\n  %d CIDR block(s)\n" (count cidrs))))
 
 (defn print-vlsm-result
   "Prints the VLSM allocation table for parent-cidr to stdout."
   [parent-cidr allocations]
-  (let [fmt "  %-4s %-12s %-20s %-18s %-16s %-16s %s"]
-    (println (str "\nVLSM plan for " parent-cidr "\n"))
-    (println (format fmt "#" "Requested" "Allocated" "Subnet Mask" "First Host" "Last Host" "Hosts"))
-    (println (apply str (repeat 105 "-")))
-    (doseq [[idx {:keys [info requested]}] (map-indexed vector allocations)]
-      (println (format fmt
-                       (inc idx)
-                       requested
-                       (:cidr       info)
-                       (:mask       info)
-                       (:first-host info)
-                       (:last-host  info)
-                       (:hosts      info))))
-    (println)))
+  (if (= :ipv6 (-> allocations first :info :family))
+    (let [fmt "  %-4s %-12s %-43s %s"]
+      (println (str "\nIPv6 prefix plan for " parent-cidr "\n"))
+      (println (format fmt "#" "Requested" "Allocated" "Addresses"))
+      (println (apply str (repeat 80 "-")))
+      (doseq [[idx {:keys [info requested]}] (map-indexed vector allocations)]
+        (println (format fmt
+                         (inc idx)
+                         requested
+                         (:cidr info)
+                         (:addresses info))))
+      (println))
+    (let [fmt "  %-4s %-12s %-20s %-18s %-16s %-16s %s"]
+      (println (str "\nVLSM plan for " parent-cidr "\n"))
+      (println (format fmt "#" "Requested" "Allocated" "Subnet Mask" "First Host" "Last Host" "Hosts"))
+      (println (apply str (repeat 105 "-")))
+      (doseq [[idx {:keys [info requested]}] (map-indexed vector allocations)]
+        (println (format fmt
+                         (inc idx)
+                         requested
+                         (:cidr       info)
+                         (:mask       info)
+                         (:first-host info)
+                         (:last-host  info)
+                         (:hosts      info))))
+      (println))))
 
 (defn print-overlaps-result
   "Prints the overlap report for cidrs to stdout."
@@ -211,17 +233,24 @@
   "Prints the utilization map and stats for the pre-computed result map."
   [{:keys [parent-info alloc-infos free-infos largest-free
            total-addrs used-addrs free-addrs pct-used fragmentation bar]}]
-  (println (format "\n%s  [%d addresses]\n" (:cidr parent-info) total-addrs))
+  (println (format "\n%s  [%s addresses]\n" (:cidr parent-info) total-addrs))
   (println (str "  " bar "\n"))
-  (let [largest-cidr (:cidr largest-free)
-        fmt          "  %-11s %-20s %-18s %d hosts%s"]
-    (doseq [info alloc-infos]
-      (println (format fmt "Allocated" (:cidr info) (:mask info) (:hosts info) "")))
-    (doseq [info free-infos]
-      (println (format fmt "Free" (:cidr info) (:mask info) (:hosts info)
-                       (if (= (:cidr info) largest-cidr) "  \u2190 largest" "")))))
+  (let [largest-cidr (:cidr largest-free)]
+    (if (= :ipv6 (:family parent-info))
+      (let [fmt "  %-11s %-43s %s addresses%s"]
+        (doseq [info alloc-infos]
+          (println (format fmt "Allocated" (:cidr info) (:addresses info) "")))
+        (doseq [info free-infos]
+          (println (format fmt "Free" (:cidr info) (:addresses info)
+                           (if (= (:cidr info) largest-cidr) "  \u2190 largest" "")))))
+      (let [fmt "  %-11s %-20s %-18s %d hosts%s"]
+        (doseq [info alloc-infos]
+          (println (format fmt "Allocated" (:cidr info) (:mask info) (:hosts info) "")))
+        (doseq [info free-infos]
+          (println (format fmt "Free" (:cidr info) (:mask info) (:hosts info)
+                           (if (= (:cidr info) largest-cidr) "  \u2190 largest" "")))))))
   (println)
-  (println (format "  Used: %d / %d  (%d%%)  |  Free: %d in %d block%s%s\n"
+  (println (format "  Used: %s / %s  (%d%%)  |  Free: %s in %d block%s%s\n"
                    used-addrs total-addrs pct-used
                    free-addrs (count free-infos)
                    (if (= 1 (count free-infos)) "" "s")
@@ -268,26 +297,44 @@
 (defn print-allocate-result
   "Prints the recommended CIDR allocation to stdout."
   [parent used n info]
-  (println (format "\nAllocate %d host(s) in %s" n parent))
-  (when (seq used)
-    (println (format "  Excluding: %s" (str/join ", " used))))
-  (println)
-  (println (label-row "Allocated"   (:cidr       info)))
-  (println (label-row "First Host"  (:first-host info)))
-  (println (label-row "Last Host"   (:last-host  info)))
-  (println (label-row "Hosts"       (:hosts      info)))
-  (println (label-row "Subnet Mask" (:mask       info)))
-  (println))
+  (if (= :ipv6 (:family info))
+    (do
+      (println (format "\nAllocate %s in %s" n parent))
+      (when (seq used)
+        (println (format "  Excluding: %s" (str/join ", " used))))
+      (println)
+      (println (label-row "Allocated"     (:cidr          info)))
+      (println (label-row "First Address" (:first-address info)))
+      (println (label-row "Last Address"  (:last-address  info)))
+      (println (label-row "Addresses"     (:addresses     info)))
+      (println))
+    (do
+      (println (format "\nAllocate %d host(s) in %s" n parent))
+      (when (seq used)
+        (println (format "  Excluding: %s" (str/join ", " used))))
+      (println)
+      (println (label-row "Allocated"   (:cidr       info)))
+      (println (label-row "First Host"  (:first-host info)))
+      (println (label-row "Last Host"   (:last-host  info)))
+      (println (label-row "Hosts"       (:hosts      info)))
+      (println (label-row "Subnet Mask" (:mask       info)))
+      (println))))
 
 (defn print-subnet-info-short
   "Prints a single terse summary line for info to stdout."
   [info]
-  (println (format "%s  %s\u2013%s  %d hosts  mask %s"
-                   (:cidr      info)
-                   (:first-host info)
-                   (:last-host  info)
-                   (:hosts     info)
-                   (:mask      info))))
+  (if (= :ipv6 (:family info))
+    (println (format "%s  %s\u2013%s  %s addresses"
+                     (:cidr info)
+                     (:first-address info)
+                     (:last-address info)
+                     (:addresses info)))
+    (println (format "%s  %s\u2013%s  %d hosts  mask %s"
+                     (:cidr      info)
+                     (:first-host info)
+                     (:last-host  info)
+                     (:hosts     info)
+                     (:mask      info)))))
 
 (defn print-adjacent-result
   "Prints an adjacent block result to stdout."

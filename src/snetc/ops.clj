@@ -1,8 +1,33 @@
 (ns snetc.ops
   "Set operations on CIDR collections: aggregation, diff, overlaps, VLSM, LPM."
   (:require [clojure.string :as str]
+            [snetc.addr     :as addr]
             [snetc.ip       :as ip]
             [snetc.subnet   :as subnet]))
+
+(defn- cidr-entry [cidr]
+  (let [{:keys [family bits prefix network last cidr]} (addr/parse-cidr cidr)]
+    {:family family
+     :bits bits
+     :cidr cidr
+     :prefix prefix
+     :range [network last]
+     :start network
+     :end last}))
+
+(defn- require-single-family! [entries op-name]
+  (when (seq entries)
+    (let [family (:family (first entries))]
+      (when-let [mixed (first (filter #(not= family (:family %)) entries))]
+        (throw (ex-info (str op-name " requires a single address family; mixed "
+                             (name family) " and " (name (:family mixed)) " inputs")
+                        {:operation op-name
+                         :family family
+                         :mixed-family (:family mixed)})))
+      family)))
+
+(defn- ranges->cidrs [family ranges]
+  (vec (mapcat (fn [[s e]] (addr/range->cidrs family s e)) ranges)))
 
 (defn- merge-ranges
   "Returns the minimal non-overlapping set of ranges from a sorted seq."
@@ -43,34 +68,42 @@
 (defn aggregate
   "Returns the minimal CIDR set covering the same address space as cidrs, as a vector."
   [cidrs]
-  (->> cidrs
-       (map subnet/cidr->range)
-       (sort-by first)
-       merge-ranges
-       (mapcat (fn [[s e]] (subnet/range->cidrs s e)))
-       vec))
+  (let [entries (mapv cidr-entry cidrs)
+        family  (require-single-family! entries "aggregate")]
+    (if (nil? family)
+      []
+      (->> entries
+           (map :range)
+           (sort-by first)
+           merge-ranges
+           (ranges->cidrs family)))))
 
 (defn free-space
   "Returns CIDR strings for unallocated space in parent-cidr after removing allocated-cidrs.
   Allocations that extend beyond the parent boundary are clipped."
   [parent-cidr allocated-cidrs]
-  (let [[pstart pend] (subnet/cidr->range parent-cidr)
-        used  (->> allocated-cidrs
-                   (map subnet/cidr->range)
-                   (filter (fn [[s e]] (and (<= s pend) (>= e pstart)))) ; any overlap
-                   (map    (fn [[s e]] [(max s pstart) (min e pend)]))    ; clip to parent
-                   (sort-by first)
-                   merge-ranges)
-        gaps  (loop [pos  pstart
-                     rs   used
-                     acc  []]
-                (if (empty? rs)
-                  (if (<= pos pend) (conj acc [pos pend]) acc)
-                  (let [[s e] (first rs)]
-                    (recur (inc e)
-                           (rest rs)
-                           (if (< pos s) (conj acc [pos (dec s)]) acc)))))]
-    (mapcat (fn [[s e]] (subnet/range->cidrs s e)) gaps)))
+  (let [parent-entry {:input parent-cidr :entry (cidr-entry parent-cidr)}
+        alloc-entries (mapv (fn [cidr] {:input cidr :entry (cidr-entry cidr)})
+                            allocated-cidrs)
+        all-entries (mapv :entry (cons parent-entry alloc-entries))
+        family (require-single-family! all-entries "free")
+        {:keys [start end]} (:entry parent-entry)
+        used (->> alloc-entries
+                  (map (comp :range :entry))
+                  (filter (fn [[s e]] (and (<= s end) (>= e start)))) ; any overlap
+                  (map    (fn [[s e]] [(max s start) (min e end)]))   ; clip to parent
+                  (sort-by first)
+                  merge-ranges)
+        gaps (loop [pos start
+                    rs  used
+                    acc []]
+               (if (empty? rs)
+                 (if (<= pos end) (conj acc [pos end]) acc)
+                 (let [[s e] (first rs)]
+                   (recur (inc e)
+                          (rest rs)
+                          (if (< pos s) (conj acc [pos (dec s)]) acc)))))]
+    (ranges->cidrs family gaps)))
 
 (defn cidr-diff
   "Returns {:added :removed :unchanged} CIDR lists comparing before-cidrs to after-cidrs.
@@ -82,11 +115,15 @@
   address space is split differently between before and after, :unchanged reflects
   the before-side CIDR blocks."
   [before-cidrs after-cidrs]
-  (let [br        (->> before-cidrs (map subnet/cidr->range) (sort-by first) merge-ranges)
-        ar        (->> after-cidrs  (map subnet/cidr->range) (sort-by first) merge-ranges)
+  (let [before-entries (mapv cidr-entry before-cidrs)
+        after-entries  (mapv cidr-entry after-cidrs)
+        all-entries    (vec (concat before-entries after-entries))
+        family         (require-single-family! all-entries "diff")
+        br        (->> before-entries (map :range) (sort-by first) merge-ranges)
+        ar        (->> after-entries  (map :range) (sort-by first) merge-ranges)
         added-r   (subtract-ranges ar br)
         removed-r (subtract-ranges br ar)
-        ->cidrs   (fn [ranges] (vec (mapcat (fn [[s e]] (subnet/range->cidrs s e)) ranges)))]
+        ->cidrs   (fn [ranges] (if family (ranges->cidrs family ranges) []))]
     {:added     (->cidrs added-r)
      :removed   (->cidrs removed-r)
      ;; unchanged = before minus removed = what stayed the same, as before-side CIDRs.
@@ -102,10 +139,11 @@
   "Returns all overlapping pairs in cidrs as {:a :b :type} maps.
   :type is :a-contains-b, :b-contains-a, or :partial."
   [cidrs]
-  (let [indexed (->> cidrs
-                     (map-indexed (fn [i c]
-                                    (let [[s e :as r] (subnet/cidr->range c)]
-                                      {:idx i :cidr c :range r :start s :end e})))
+  (let [entries (mapv cidr-entry cidrs)
+        _       (require-single-family! entries "overlaps")
+        indexed (->> entries
+                     (map-indexed (fn [i {:keys [cidr range start end]}]
+                                    {:idx i :cidr cidr :range range :start start :end end}))
                      (sort-by (juxt :start :end :idx)))]
     (loop [remaining indexed
            active []
@@ -129,32 +167,42 @@
 (defn longest-prefix-match
   "Returns the longest-prefix-matching CIDR from routes for ip, or nil."
   [ip routes]
-  (let [ip-n (ip/ip->long ip)]
-    (second
-     (reduce (fn [[best-prefix :as best] route]
-               (let [{:keys [ip-str prefix]} (subnet/parse-cidr route)
-                     net (ip/network-addr (ip/ip->long ip-str) prefix)]
-                 (if (and (= net (ip/network-addr ip-n prefix))
-                          (> prefix best-prefix))
-                   [prefix route]
-                   best)))
-             [-1 nil]
-             routes))))
+  (let [parsed-ip (addr/parse-ip ip)
+        entries   (mapv cidr-entry routes)
+        family    (require-single-family! entries "lpm")]
+    (when (and family (not= family (:family parsed-ip)))
+      (throw (ex-info (str "lpm requires a single address family; mixed "
+                           (name family) " route and "
+                           (name (:family parsed-ip)) " address")
+                      {:operation "lpm"
+                       :family family
+                       :mixed-family (:family parsed-ip)})))
+    (:cidr
+     (reduce (fn [best {:keys [prefix start end] :as route}]
+               (if (and (<= start (:addr parsed-ip) end)
+                        (> prefix (:prefix best -1)))
+                 route
+                 best))
+             {:prefix -1 :cidr nil}
+             entries))))
 
 (defn supernet
   "Returns the smallest single CIDR string that covers all given cidrs.
   Walks up the prefix tree until it finds a block that contains every input range."
   [cidrs]
-  (let [ranges  (mapv subnet/cidr->range cidrs)
+  (let [entries   (mapv cidr-entry cidrs)
+        family    (require-single-family! entries "supernet")
+        bits      (:bits (first entries))
+        ranges    (mapv :range entries)
         min-start (apply min (map first ranges))
         max-end   (apply max (map second ranges))]
-    (loop [prefix 32]
+    (loop [prefix bits]
       (when (< prefix 0)
         (throw (ex-info "Cannot find covering supernet (exhausted all prefixes)" {})))
-      (let [net   (ip/network-addr min-start prefix)
-            bcast (ip/broadcast-addr net prefix)]
-        (if (<= max-end bcast)
-          (str (ip/long->ip net) "/" prefix)
+      (let [net  (addr/network-addr family min-start prefix)
+            last (addr/last-addr family net prefix)]
+        (if (<= max-end last)
+          (first (addr/range->cidrs family net last))
           (recur (dec prefix)))))))
 
 (defn hosts->min-prefix
@@ -183,6 +231,28 @@
                 (str (ip/long->ip aligned) "/" prefix))))
           gaps)))
 
+(defn next-available-prefix
+  "Returns the first available aligned CIDR with requested prefix within parent-cidr."
+  [parent-cidr allocated-cidrs requested-prefix]
+  (let [{:keys [family prefix]} (cidr-entry parent-cidr)]
+    (when-not (addr/valid-prefix? family requested-prefix)
+      (throw (ex-info (str "Prefix must be 0-" (:bits (cidr-entry parent-cidr))
+                           ", got: " requested-prefix)
+                      {:parent parent-cidr :requested-prefix requested-prefix})))
+    (when (< requested-prefix prefix)
+      (throw (ex-info (str "Requested prefix /" requested-prefix
+                           " is smaller than parent /" prefix)
+                      {:parent parent-cidr :requested-prefix requested-prefix})))
+    (let [size (addr/address-count family requested-prefix)]
+      (some (fn [gap-cidr]
+              (let [{:keys [start end]} (addr/cidr->range gap-cidr)
+                    remainder (mod start size)
+                    aligned   (if (zero? remainder) start (+ start (- size remainder)))
+                    block-end (dec (+ aligned size))]
+                (when (<= block-end end)
+                  (first (addr/range->cidrs family aligned block-end)))))
+            (free-space parent-cidr allocated-cidrs)))))
+
 (defn- fragmentation-score [free-count]
   (cond
     (zero? free-count) nil
@@ -196,29 +266,34 @@
 (defn- util-bar
   "Returns a bar-width string of █ (allocated) and ░ (free) characters."
   [allocated-cidrs parent-cidr]
-  (let [[pstart pend] (subnet/cidr->range parent-cidr)
+  (let [{pstart :start pend :end} (addr/cidr->range parent-cidr)
         total   (inc (- pend pstart))
-        aranges (mapv subnet/cidr->range allocated-cidrs)]
+        aranges (mapv (fn [cidr]
+                        (let [{:keys [start end]} (addr/cidr->range cidr)]
+                          [start end]))
+                      allocated-cidrs)]
     (apply str
            (for [i (range bar-width)]
-             (let [addr (+ pstart (long (/ (* (long i) total) bar-width)))]
+             (let [addr (+ pstart (quot (* (bigint i) total) bar-width))]
                (if (some (fn [[s e]] (<= s addr e)) aranges) \█ \░))))))
 
 (defn utilization-info
   "Returns utilization statistics for parent-cidr given a set of allocated-cidrs."
   [parent-cidr allocated-cidrs]
-  (let [parent-info  (subnet/subnet-info parent-cidr)
-        [pstart pend] (subnet/cidr->range parent-cidr)
+  (let [parsed-cidrs (mapv cidr-entry (cons parent-cidr allocated-cidrs))
+        _ (require-single-family! parsed-cidrs "util")
+        parent-info  (addr/subnet-info parent-cidr)
+        {pstart :start pend :end} (addr/cidr->range parent-cidr)
         total-addrs  (inc (- pend pstart))
         free-cidrs   (vec (free-space parent-cidr allocated-cidrs))
-        free-addrs   (reduce + 0 (map (fn [c]
-                                        (let [[s e] (subnet/cidr->range c)]
-                                          (inc (- e s))))
-                                      free-cidrs))
+        free-addrs   (reduce + 0N (map (fn [c]
+                                          (let [{:keys [start end]} (addr/cidr->range c)]
+                                            (inc (- end start))))
+                                        free-cidrs))
         used-addrs   (- total-addrs free-addrs)
-        alloc-infos  (mapv subnet/subnet-info allocated-cidrs)
-        free-infos   (mapv subnet/subnet-info free-cidrs)
-        largest-free (when (seq free-infos) (apply max-key :hosts free-infos))
+        alloc-infos  (mapv addr/subnet-info allocated-cidrs)
+        free-infos   (mapv addr/subnet-info free-cidrs)
+        largest-free (when (seq free-infos) (apply max-key :addresses free-infos))
         pct-used     (if (pos? total-addrs)
                        (long (Math/round (double (* 100 (/ used-addrs total-addrs)))))
                        0)]
@@ -233,7 +308,47 @@
      :fragmentation (fragmentation-score (count free-infos))
      :bar           (util-bar allocated-cidrs parent-cidr)}))
 
-(def ^:private cidr-pat #"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}")
+(defn plan-prefixes
+  "Returns a vector of prefix-size allocations within parent-cidr.
+  Requests are allocated largest-first, which means lower prefix numbers first."
+  [parent-cidr requested-prefixes]
+  (let [{:keys [family prefix start end]} (cidr-entry parent-cidr)]
+    (doseq [requested-prefix requested-prefixes]
+      (when-not (addr/valid-prefix? family requested-prefix)
+        (throw (ex-info (str "Prefix must be 0-" (:bits (cidr-entry parent-cidr))
+                             ", got: " requested-prefix)
+                        {:parent parent-cidr :requested-prefix requested-prefix})))
+      (when (< requested-prefix prefix)
+        (throw (ex-info (str "Requested prefix /" requested-prefix
+                             " is smaller than parent /" prefix)
+                        {:parent parent-cidr :requested-prefix requested-prefix}))))
+    (loop [prefixes (sort requested-prefixes)
+           pos      start
+           result   []]
+      (cond
+        (empty? prefixes) result
+
+        (> pos end)
+        (throw (ex-info (str "Not enough space in " parent-cidr
+                             " for remaining allocations") {}))
+
+        :else
+        (let [requested-prefix (first prefixes)
+              size             (addr/address-count family requested-prefix)
+              remainder        (mod pos size)
+              aligned          (if (zero? remainder) pos (+ pos (- size remainder)))
+              block-end        (dec (+ aligned size))]
+          (when (> block-end end)
+            (throw (ex-info (str "Not enough space in " parent-cidr
+                                 " to fit a /" requested-prefix) {})))
+          (let [cidr (first (addr/range->cidrs family aligned block-end))]
+            (recur (rest prefixes)
+                   (inc block-end)
+                   (conj result {:info             (addr/subnet-info cidr)
+                                 :requested        (str "/" requested-prefix)
+                                 :requested-prefix requested-prefix}))))))))
+
+(def ^:private cidr-pat #"(?i)[0-9a-f:.]+/\d{1,3}")
 
 (defn parse-routes
   "Extracts destination CIDRs from route table text.
@@ -244,17 +359,19 @@
        (map str/trim)
        (remove #(or (str/blank? %) (str/starts-with? % "#")))
        (keep (fn [line]
-               (when-let [m (re-find cidr-pat line)]
-                 (try (:cidr (subnet/subnet-info m)) (catch Exception _ nil)))))
+               (some (fn [candidate]
+                       (try (:cidr (addr/subnet-info candidate))
+                            (catch Exception _ nil)))
+                     (re-seq cidr-pat line))))
        distinct
        vec))
 
 (defn- routes-within
   "Returns the subset of routes whose address range falls entirely within cidr."
   [routes cidr]
-  (let [[as ae] (subnet/cidr->range cidr)]
+  (let [{as :start ae :end} (addr/cidr->range cidr)]
     (filterv (fn [r]
-               (let [[rs re] (subnet/cidr->range r)]
+               (let [{rs :start re :end} (addr/cidr->range r)]
                  (and (>= rs as) (<= re ae))))
              routes)))
 
@@ -262,6 +379,7 @@
   "Returns analysis of a CIDR route table: containments, summarization groups, stats."
   [routes]
   (let [aggregated  (aggregate routes)
+        family      (some-> (first routes) addr/parse-cidr :family)
         groups      (->> aggregated
                          (map (fn [agg]
                                 {:summary agg
@@ -270,7 +388,8 @@
                          vec)
         contained   (filterv #(#{:a-contains-b :b-contains-a} (:type %))
                               (find-overlaps routes))]
-    {:routes           routes
+    {:family           family
+     :routes           routes
      :route-count      (count routes)
      :aggregated       aggregated
      :aggregated-count (count aggregated)

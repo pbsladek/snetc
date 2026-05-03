@@ -40,11 +40,13 @@ expect_exit() {
   fi
 }
 
-expect_contains "IPv4 subnet calculator" "$BIN" --help
+expect_contains "IP subnet calculator" "$BIN" --help
 expect_contains '"cidr":"10.0.0.0\/24"' "$BIN" 10.0.0.0/24 --json
+expect_contains '"family":"ipv6"' "$BIN" 2001:db8::1/64 --json
 expect_contains "10.0.0.0/26" "$BIN" 10.0.0.0/24 --tree 26
 expect_contains '"category":"Private"' "$BIN" classify 10.0.0.1 8.8.8.8 --json
 expect_contains '"result":["10.0.0.0\/23"]' "$BIN" aggregate 10.0.0.0/24 10.0.1.0/24 --json
+expect_contains '"result":["2001:db8::\/63"]' "$BIN" aggregate 2001:db8::/64 2001:db8:0:1::/64 --json
 expect_contains '"result":"10.0.0.0\/23"' "$BIN" supernet 10.0.0.0/24 10.0.1.0/24 --json
 
 batch='[{"cmd":"info","args":["10.0.0.0/24"]},{"cmd":"classify","args":["8.8.8.8"]}]'

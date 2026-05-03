@@ -4,7 +4,7 @@
 [![Release](https://github.com/pbsladek/snetc/actions/workflows/release.yml/badge.svg)](https://github.com/pbsladek/snetc/actions/workflows/release.yml)
 [![Codecov](https://codecov.io/gh/pbsladek/snetc/graph/badge.svg)](https://codecov.io/gh/pbsladek/snetc)
 
-IPv4 subnet calculator for the command line.
+IPv4 and IPv6 subnet calculator for the command line.
 
 ## Install
 
@@ -79,20 +79,24 @@ Tagged releases publish multi-architecture images to Docker Hub as `pwbsladek/sn
 ## Usage
 
 ```
-snetc <cidr>                              Show info for a subnet
-snetc <cidr> --split <prefix>             List all /<prefix> subnets within <cidr>
-snetc <cidr> --tree  <prefix>             Show split tree down to /<prefix>
+snetc <cidr>                              Show info for an IPv4 or IPv6 subnet
+snetc <cidr> --split <prefix>             List all /<prefix> IPv4 subnets within <cidr>
+snetc <cidr> --tree  <prefix>             Show IPv4 split tree down to /<prefix>
 snetc aggregate <cidr> [<cidr> ...]       Aggregate CIDRs to minimal covering set
 snetc aggregate                           Read CIDRs from stdin (one per line)
 snetc contains <cidr> <ip> [<ip> ...]     Check which IPs fall within a subnet
 snetc free <parent> <alloc> [...]         Show unallocated space in a subnet
-snetc plan <parent> <hosts> [<hosts> ...] VLSM: allocate subnets by host count
+snetc allocate <parent> <hosts|/prefix> [...used]  Next IPv4 host block or IPv6 prefix
+snetc plan <parent> <hosts|/prefix> [...] IPv4 VLSM by hosts; IPv6 by prefix
 snetc overlaps <cidr> [<cidr> ...]        Detect overlapping/contained networks
 snetc lpm <cidr|ip> ...                   Longest-prefix match (CIDRs=routes, IPs=lookups)
 snetc diff <cidr> ... -- <cidr> ...       Diff two sets of CIDRs
 snetc classify <ip-or-cidr> ...           RFC classification of IPs/CIDRs
 snetc range <start-ip> <end-ip|+count>    Convert IP range to minimal CIDRs
-snetc tree <cidr>                         Interactive split/join subnet planner
+snetc util <parent> <alloc> [...]         Visualise address space utilisation
+snetc analyze [<file>]                    Analyse route table (or stdin)
+snetc validate <ip-or-cidr> ...           Validate IPs/CIDRs
+snetc tree <cidr>                         Interactive IPv4 split/join subnet planner
 ```
 
 ## Examples
@@ -113,6 +117,10 @@ $ snetc 192.168.0.0/22
 
 ### Split into subnets
 
+Split and tree rendering are IPv4-only. Non-interactive commands such as `info`,
+`aggregate`, `contains`, `range`, `free`, `plan`, `allocate`, `util`,
+`classify`, and `analyze` support IPv6 and reject mixed IPv4/IPv6 set inputs.
+
 ```
 $ snetc 192.168.0.0/22 --split 24
   Network/CIDR         Subnet Mask        First Host         Last Host          Broadcast          Hosts
@@ -121,6 +129,20 @@ $ snetc 192.168.0.0/22 --split 24
   192.168.1.0/24       255.255.255.0      192.168.1.1        192.168.1.254      192.168.1.255      254
   192.168.2.0/24       255.255.255.0      192.168.2.1        192.168.2.254      192.168.2.255      254
   192.168.3.0/24       255.255.255.0      192.168.3.1        192.168.3.254      192.168.3.255      254
+```
+
+### IPv6 subnet info
+
+IPv6 output omits IPv4-only concepts such as broadcast, subnet mask, wildcard
+mask, and usable host counts. Large JSON address counts are emitted as strings.
+
+```
+$ snetc 2001:db8::1/64
+2001:db8::/64
+  Network:           2001:db8::
+  First Address:     2001:db8::
+  Last Address:      2001:db8::ffff:ffff:ffff:ffff
+  Addresses:         18446744073709551616
 ```
 
 ### Subnet tree
@@ -142,6 +164,15 @@ $ snetc 192.168.0.0/22 --tree 24
 $ snetc aggregate 10.0.0.0/24 10.0.1.0/24
 Aggregated 2 network(s) into 1:
   10.0.0.0/23
+```
+
+IPv6 aggregation uses the same command and requires one address family per
+operation:
+
+```
+$ snetc aggregate 2001:db8::/64 2001:db8:0:1::/64
+Aggregated 2 network(s) into 1:
+  2001:db8::/63
 ```
 
 ### Check containment
@@ -180,6 +211,18 @@ VLSM plan for 10.0.0.0/24
   1    100          10.0.0.0/25          255.255.255.128    10.0.0.1         10.0.0.126       126
   2    50           10.0.0.128/26        255.255.255.192    10.0.0.129       10.0.0.190       62
   3    20           10.0.0.192/27        255.255.255.224    10.0.0.193       10.0.0.222       30
+```
+
+For IPv6, `plan` and `allocate` use prefix requests instead of host counts:
+
+```
+$ snetc plan 2001:db8::/60 /64 /64
+IPv6 prefix plan for 2001:db8::/60
+
+  #    Requested    Allocated                                   Addresses
+--------------------------------------------------------------------------------
+  1    /64          2001:db8::/64                               18446744073709551616
+  2    /64          2001:db8:0:1::/64                           18446744073709551616
 ```
 
 ### Overlap detection
