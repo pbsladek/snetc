@@ -2,6 +2,7 @@
   "Specs for all snetc domain types and public functions."
   (:require [clojure.spec.alpha     :as s]
             [clojure.spec.gen.alpha :as gen]
+            [snetc.addr             :as addr]
             [snetc.ip               :as ip]
             [snetc.subnet           :as subnet]
             [snetc.classify         :as classify]
@@ -43,6 +44,88 @@
                           (gen/choose 0 255)
                           (gen/choose 0 32)))))
 
+(def ^:private ipv6-samples
+  ["::"
+   "::1"
+   "2001:db8::1"
+   "2001:db8::ffff"
+   "2001:db8:1::1"
+   "fd00::1"
+   "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"])
+
+(def ^:private ipv6-cidr-samples
+  ["::/0"
+   "::1/128"
+   "2001:db8::/32"
+   "2001:db8::1/64"
+   "2001:db8:1::/48"
+   "fd00::/8"])
+
+(defn- parses-as-family? [parse-fn family s]
+  (try (= family (:family (parse-fn s)))
+       (catch Exception _ false)))
+
+(defn- parsed-family [parse-fn s]
+  (try (:family (parse-fn s))
+       (catch Exception _ nil)))
+
+(defn- max-addr-for-family [family]
+  (case family
+    :ipv4 0xFFFFFFFFN
+    :ipv6 (dec (bigint (.shiftLeft java.math.BigInteger/ONE 128)))))
+
+(defn- same-cidr-family? [cidrs]
+  (let [families (->> cidrs (map #(parsed-family addr/parse-cidr %)) (remove nil?) set)]
+    (<= (count families) 1)))
+
+(defn- ip-and-routes-same-family? [{:keys [ip routes]}]
+  (let [ip-family    (parsed-family addr/parse-ip ip)
+        route-family (first (keep #(parsed-family addr/parse-cidr %) routes))]
+    (or (nil? route-family) (= ip-family route-family))))
+
+(defn- prefix-valid-for-parent? [parent-cidr requested-prefix]
+  (try (let [{:keys [family prefix]} (addr/parse-cidr parent-cidr)]
+         (and (addr/valid-prefix? family requested-prefix)
+              (>= requested-prefix prefix)))
+       (catch Exception _ false)))
+
+;; Valid IPv6 literal supported by snetc.addr.
+(s/def ::ipv6-str
+  (s/with-gen
+    (s/and string? #(parses-as-family? addr/parse-ip :ipv6 %))
+    #(gen/elements ipv6-samples)))
+
+;; Valid IPv6 CIDR supported by snetc.addr.
+(s/def ::ipv6-cidr-str
+  (s/with-gen
+    (s/and string? #(parses-as-family? addr/parse-cidr :ipv6 %))
+    #(gen/elements ipv6-cidr-samples)))
+
+;; Valid IPv4 or IPv6 address literal.
+(s/def ::addr-str
+  (s/with-gen
+    (s/and string? #(try (boolean (addr/parse-ip %)) (catch Exception _ false)))
+    #(gen/one-of [(s/gen ::ip-str) (s/gen ::ipv6-str)])))
+
+;; Valid IPv4 or IPv6 CIDR.
+(s/def ::addr-cidr-str
+  (s/with-gen
+    (s/and string? #(try (boolean (addr/parse-cidr %)) (catch Exception _ false)))
+    #(gen/one-of [(s/gen ::cidr-str) (s/gen ::ipv6-cidr-str)])))
+
+(s/def ::same-family-cidrs
+  (s/with-gen
+    (s/and (s/coll-of ::addr-cidr-str :kind vector?)
+           same-cidr-family?)
+    #(gen/one-of [(gen/vector (s/gen ::cidr-str) 0 6)
+                  (gen/vector (s/gen ::ipv6-cidr-str) 0 6)])))
+
+(s/def ::same-family-cidrs-nonempty
+  (s/with-gen
+    (s/and ::same-family-cidrs seq)
+    #(gen/one-of [(gen/vector (s/gen ::cidr-str) 1 6)
+                  (gen/vector (s/gen ::ipv6-cidr-str) 1 6)])))
+
 ;; Inclusive [start end] range of ip-longs with start <= end.
 (s/def ::ip-range
   (s/with-gen
@@ -56,6 +139,9 @@
   (s/with-gen
     (s/and pos-int? #(<= % 4294967294))
     #(gen/choose 1 4294967294)))
+
+(s/def ::family #{:ipv4 :ipv6})
+(s/def ::addr-int (s/and integer? #(<= 0 %)))
 
 ;; ── Compound types ────────────────────────────────────────────────────────────
 
@@ -75,6 +161,50 @@
                    ::hosts ::mask ::wildcard ::prefix ::cidr]
           :opt-un [::broadcast]))
 
+(s/def ::addr-parse-result
+  (s/and map?
+         #(contains? % :family)
+         #(contains? % :bits)
+         #(contains? % :addr)
+         #(contains? % :text)
+         #(s/valid? ::family (:family %))
+         #(s/valid? ::addr-int (:addr %))))
+
+(s/def ::addr-cidr-result
+  (s/and map?
+         #(contains? % :family)
+         #(contains? % :bits)
+         #(contains? % :prefix)
+         #(contains? % :network)
+         #(contains? % :last)
+         #(contains? % :cidr)
+         #(s/valid? ::family (:family %))
+         #(<= 0 (:prefix %) (:bits %))
+         #(<= (:network %) (:last %))))
+
+(s/def ::addr-info-map
+  (s/and map?
+         #(contains? % :family)
+         #(contains? % :network)
+         #(contains? % :prefix)
+         #(contains? % :cidr)
+         #(s/valid? ::family (:family %))
+         #(case (:family %)
+            :ipv4 (s/valid? ::subnet-info-map %)
+            :ipv6 (and (contains? % :first-address)
+                       (contains? % :last-address)
+                       (contains? % :addresses)
+                       (not (contains? % :broadcast))
+                       (not (contains? % :hosts))))))
+
+(s/def ::addr-range-map
+  (s/and map?
+         #(contains? % :family)
+         #(contains? % :start)
+         #(contains? % :end)
+         #(s/valid? ::family (:family %))
+         #(<= 0 (:start %) (:end %) (max-addr-for-family (:family %)))))
+
 ;; Keys for classify results.
 (s/def ::input      string?)
 (s/def ::name       (s/and string? seq))
@@ -89,11 +219,11 @@
 
 (s/def ::classify-result
   (s/keys :req-un [::input ::name ::rfc ::routable? ::spans?]
-          :opt-un [::bcast-name ::category-path]))
+          :opt-un [::bcast-name ::category-path ::family]))
 
 ;; Keys for overlap results.
-(s/def ::a    ::cidr-str)
-(s/def ::b    ::cidr-str)
+(s/def ::a    ::addr-cidr-str)
+(s/def ::b    ::addr-cidr-str)
 (s/def ::type #{:a-contains-b :b-contains-a :partial})
 
 (s/def ::overlap-result
@@ -106,13 +236,88 @@
 (s/def ::vlsm-allocation
   (s/keys :req-un [::info ::requested]))
 
+(s/def ::requested-prefix (s/and integer? #(<= 0 % 128)))
+(s/def ::prefix-allocation
+  (s/and map?
+         #(s/valid? ::addr-info-map (:info %))
+         #(string? (:requested %))
+         #(s/valid? ::requested-prefix (:requested-prefix %))))
+
+(s/def ::allocation-result
+  (s/and map?
+         #(contains? % :parent-info)
+         #(contains? % :alloc-infos)
+         #(contains? % :free-infos)
+         #(contains? % :total-addrs)
+         #(contains? % :used-addrs)
+         #(contains? % :free-addrs)
+         #(contains? % :pct-used)
+         #(contains? % :bar)))
+
 ;; Keys for cidr-diff results.
-(s/def ::added     (s/coll-of ::cidr-str :kind vector?))
-(s/def ::removed   (s/coll-of ::cidr-str :kind vector?))
-(s/def ::unchanged (s/coll-of ::cidr-str :kind vector?))
+(s/def ::added     (s/coll-of ::addr-cidr-str :kind vector?))
+(s/def ::removed   (s/coll-of ::addr-cidr-str :kind vector?))
+(s/def ::unchanged (s/coll-of ::addr-cidr-str :kind vector?))
 
 (s/def ::cidr-diff-result
   (s/keys :req-un [::added ::removed ::unchanged]))
+
+;; ── snetc.addr ───────────────────────────────────────────────────────────────
+
+(s/fdef addr/valid-prefix?
+  :args (s/cat :family ::family :p integer?)
+  :ret  boolean?)
+
+(s/fdef addr/parse-ip
+  :args (s/cat :s ::addr-str)
+  :ret  ::addr-parse-result)
+
+(s/fdef addr/parse-cidr
+  :args (s/cat :cidr ::addr-cidr-str)
+  :ret  ::addr-cidr-result)
+
+(s/fdef addr/subnet-info
+  :args (s/cat :cidr ::addr-cidr-str)
+  :ret  ::addr-info-map)
+
+(s/fdef addr/cidr->range
+  :args (s/cat :cidr ::addr-cidr-str)
+  :ret  ::addr-range-map)
+
+(s/fdef addr/range->cidrs
+  :args (s/with-gen
+          (s/and (s/cat :family ::family :start ::addr-int :end ::addr-int)
+                 (fn [{:keys [family start end]}]
+                   (and (<= 0 start end)
+                        (<= end (max-addr-for-family family)))))
+          #(gen/elements [[:ipv4 0N 0N]
+                          [:ipv4 167772160N 167772415N]
+                          [:ipv4 0N 0xFFFFFFFFN]
+                          [:ipv6 0N 0N]
+                          [:ipv6 1N 3N]
+                          [:ipv6 (:start (addr/cidr->range "2001:db8::/112"))
+                           (:end (addr/cidr->range "2001:db8::/112"))]]))
+  :ret  (s/nilable (s/coll-of ::addr-cidr-str :kind vector?)))
+
+(s/fdef addr/address->text
+  :args (s/with-gen
+          (s/and (s/cat :family ::family :n ::addr-int)
+                 (fn [{:keys [family n]}]
+                   (<= n (max-addr-for-family family))))
+          #(gen/elements [[:ipv4 0N]
+                          [:ipv4 167772161N]
+                          [:ipv4 0xFFFFFFFFN]
+                          [:ipv6 0N]
+                          [:ipv6 1N]
+                          [:ipv6 (:addr (addr/parse-ip "2001:db8::1"))]]))
+  :ret  ::addr-str)
+
+(s/fdef addr/ip-in-cidr?
+  :args (s/with-gen
+          (s/cat :ip ::addr-str :cidr ::addr-cidr-str)
+          #(gen/one-of [(gen/tuple (s/gen ::ip-str) (s/gen ::cidr-str))
+                        (gen/tuple (s/gen ::ipv6-str) (s/gen ::ipv6-cidr-str))]))
+  :ret  boolean?)
 
 ;; ── snetc.ip ──────────────────────────────────────────────────────────────────
 
@@ -241,8 +446,8 @@
 
 ;; Input to classify: either a bare IP or a CIDR string.
 (s/def ::ip-or-cidr-str
-  (s/or :ip   ::ip-str
-        :cidr ::cidr-str))
+  (s/or :ip   ::addr-str
+        :cidr ::addr-cidr-str))
 
 (s/fdef classify/classify
   :args (s/cat :input ::ip-or-cidr-str)
@@ -254,27 +459,50 @@
 ;; ── snetc.ops ────────────────────────────────────────────────────────────────
 
 (s/fdef ops/aggregate
-  :args (s/cat :cidrs (s/coll-of ::cidr-str))
-  :ret  (s/coll-of ::cidr-str))
+  :args (s/cat :cidrs ::same-family-cidrs)
+  :ret  (s/coll-of ::addr-cidr-str :kind vector?))
 
 (s/fdef ops/free-space
-  :args (s/cat :parent-cidr     ::cidr-str
-               :allocated-cidrs (s/coll-of ::cidr-str))
-  :ret  (s/coll-of ::cidr-str))
+  :args (s/with-gen
+          (s/and (s/cat :parent-cidr ::addr-cidr-str
+                        :allocated-cidrs ::same-family-cidrs)
+                 (fn [{:keys [parent-cidr allocated-cidrs]}]
+                   (same-cidr-family? (cons parent-cidr allocated-cidrs))))
+          #(gen/elements [["10.0.0.0/24" []]
+                          ["10.0.0.0/24" ["10.0.0.0/25"]]
+                          ["2001:db8::/63" []]
+                          ["2001:db8::/63" ["2001:db8::/64"]]]))
+  :ret  (s/coll-of ::addr-cidr-str :kind vector?))
 
 (s/fdef ops/cidr-diff
-  :args (s/cat :before-cidrs (s/coll-of ::cidr-str)
-               :after-cidrs  (s/coll-of ::cidr-str))
+  :args (s/with-gen
+          (s/and (s/cat :before-cidrs ::same-family-cidrs
+                        :after-cidrs  ::same-family-cidrs)
+                 (fn [{:keys [before-cidrs after-cidrs]}]
+                   (same-cidr-family? (concat before-cidrs after-cidrs))))
+          #(gen/one-of [(gen/tuple (gen/vector (s/gen ::cidr-str) 0 6)
+                                    (gen/vector (s/gen ::cidr-str) 0 6))
+                        (gen/tuple (gen/vector (s/gen ::ipv6-cidr-str) 0 6)
+                                    (gen/vector (s/gen ::ipv6-cidr-str) 0 6))]))
   :ret  ::cidr-diff-result)
 
 (s/fdef ops/find-overlaps
-  :args (s/cat :cidrs (s/coll-of ::cidr-str))
-  :ret  (s/coll-of ::overlap-result))
+  :args (s/cat :cidrs ::same-family-cidrs)
+  :ret  (s/coll-of ::overlap-result :kind vector?))
 
 (s/fdef ops/longest-prefix-match
-  :args (s/cat :ip     ::ip-str
-               :routes (s/coll-of ::cidr-str))
-  :ret  (s/nilable ::cidr-str))
+  :args (s/with-gen
+          (s/and (s/cat :ip ::addr-str :routes ::same-family-cidrs)
+                 ip-and-routes-same-family?)
+          #(gen/one-of [(gen/tuple (s/gen ::ip-str)
+                                    (gen/vector (s/gen ::cidr-str) 0 6))
+                        (gen/tuple (s/gen ::ipv6-str)
+                                    (gen/vector (s/gen ::ipv6-cidr-str) 0 6))]))
+  :ret  (s/nilable ::addr-cidr-str))
+
+(s/fdef ops/supernet
+  :args (s/cat :cidrs ::same-family-cidrs-nonempty)
+  :ret  ::addr-cidr-str)
 
 (s/fdef ops/hosts->min-prefix
   :args (s/cat :n ::host-count)
@@ -283,7 +511,43 @@
           ;; the returned prefix always has enough usable hosts
           (>= (ip/usable-hosts ret) (:n args))))
 
+(s/fdef ops/next-available-prefix
+  :args (s/with-gen
+          (s/and (s/cat :parent-cidr ::addr-cidr-str
+                        :allocated-cidrs ::same-family-cidrs
+                        :requested-prefix ::requested-prefix)
+                 (fn [{:keys [parent-cidr allocated-cidrs requested-prefix]}]
+                   (and (same-cidr-family? (cons parent-cidr allocated-cidrs))
+                        (prefix-valid-for-parent? parent-cidr requested-prefix))))
+          #(gen/elements [["10.0.0.0/24" [] 25]
+                          ["10.0.0.0/24" ["10.0.0.0/25"] 25]
+                          ["2001:db8::/60" [] 64]
+                          ["2001:db8::/60" ["2001:db8::/64"] 64]]))
+  :ret  (s/nilable ::addr-cidr-str))
+
 (s/fdef ops/plan-vlsm
   :args (s/cat :parent-cidr ::cidr-str
                :host-counts (s/coll-of ::host-count :min-count 1))
   :ret  (s/coll-of ::vlsm-allocation))
+
+(s/fdef ops/plan-prefixes
+  :args (s/with-gen
+          (s/and (s/cat :parent-cidr ::addr-cidr-str
+                        :requested-prefixes (s/coll-of ::requested-prefix :kind vector? :min-count 1))
+                 (fn [{:keys [parent-cidr requested-prefixes]}]
+                   (every? #(prefix-valid-for-parent? parent-cidr %) requested-prefixes)))
+          #(gen/elements [["10.0.0.0/24" [25]]
+                          ["10.0.0.0/24" [25 25]]
+                          ["2001:db8::/60" [64]]
+                          ["2001:db8::/60" [64 64]]]))
+  :ret  (s/coll-of ::prefix-allocation :kind vector?))
+
+(s/fdef ops/utilization-info
+  :args (s/with-gen
+          (s/and (s/cat :parent-cidr ::addr-cidr-str
+                        :allocated-cidrs ::same-family-cidrs)
+                 (fn [{:keys [parent-cidr allocated-cidrs]}]
+                   (same-cidr-family? (cons parent-cidr allocated-cidrs))))
+          #(gen/elements [["10.0.0.0/24" ["10.0.0.0/25"]]
+                          ["2001:db8::/63" ["2001:db8::/64"]]]))
+  :ret  ::allocation-result)

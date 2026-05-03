@@ -35,7 +35,8 @@
 
   (testing "interactive tree requires exactly one parent CIDR"
     (is (dies-with? #(#'core/handle-interactive-tree []) #"tree requires"))
-    (is (dies-with? #(#'core/handle-interactive-tree ["10.0.0.0/24" "extra"]) #"exactly one"))))
+    (is (dies-with? #(#'core/handle-interactive-tree ["10.0.0.0/24" "extra"]) #"exactly one"))
+    (is (dies-with? #(#'core/handle-interactive-tree ["2001:db8::/64"]) #"IPv4-only"))))
 
 (deftest interactive-tree-handler-test
   (testing "interactive tree delegates to the TUI"
@@ -147,6 +148,18 @@
           data (json/read-str out :key-fn keyword)]
       (is (not (contains? data :broadcast)))))
 
+  (testing "IPv6 JSON output uses address range keys"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-info "2001:db8::1/64")))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "ipv6" (:family data)))
+      (is (= "2001:db8::/64" (:cidr data)))
+      (is (= "2001:db8::" (:network data)))
+      (is (= "2001:db8::ffff:ffff:ffff:ffff" (:last_address data)))
+      (is (= "18446744073709551616" (:addresses data)))
+      (is (not (contains? data :broadcast)))
+      (is (not (contains? data :mask)))))
+
   (testing "--json on aggregate emits structured result"
     (let [out  (with-out-str (binding [core/*json?* true]
                                (#'core/handle-aggregate ["10.0.0.0/24" "10.0.1.0/24"])))
@@ -155,6 +168,14 @@
       (is (= 1             (:result_count data)))
       (is (= ["10.0.0.0/23"] (:result     data)))))
 
+  (testing "--json on IPv6 aggregate emits structured result"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-aggregate ["2001:db8::/64" "2001:db8:0:1::/64"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 2 (:input_count data)))
+      (is (= 1 (:result_count data)))
+      (is (= ["2001:db8::/63"] (:result data)))))
+
   (testing "--json on overlaps emits overlap list"
     (let [out  (with-out-str (binding [core/*json?* true]
                                (#'core/handle-overlaps ["10.0.0.0/8" "10.0.0.0/24"])))
@@ -162,13 +183,27 @@
       (is (= 1 (:overlap_count data)))
       (is (= "a-contains-b" (-> data :overlaps first :type)))))
 
+  (testing "--json on IPv6 overlaps emits overlap list"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-overlaps ["2001:db8::/63" "2001:db8::/64"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 1 (:overlap_count data)))
+      (is (= "2001:db8::/63" (-> data :overlaps first :a)))))
+
   (testing "--json on classify includes category, rfc, routable, spans"
     (let [out  (with-out-str (binding [core/*json?* true]
                                (#'core/handle-classify ["192.168.1.1" "8.8.8.8"])))
           data (json/read-str out :key-fn keyword)]
       (is (= "Private" (:category (first data))))
       (is (= false     (:routable (first data))))
-      (is (= true      (:routable (second data)))))))
+      (is (= true      (:routable (second data))))))
+
+  (testing "--json on IPv6 classify includes family"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-classify ["2001:db8::1"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "ipv6" (:family (first data))))
+      (is (= "Documentation" (:category (first data)))))))
 
 ;;; ── --short output ───────────────────────────────────────────────────────────
 
@@ -189,7 +224,13 @@
   (testing "--short works for /32 (first-host == last-host)"
     (let [out (with-out-str (#'core/handle-info "10.0.0.1/32" :short? true))]
       (is (str/includes? out "10.0.0.1/32"))
-      (is (str/includes? out "1 hosts")))))
+      (is (str/includes? out "1 hosts"))))
+
+  (testing "--short works for IPv6"
+    (let [out (with-out-str (#'core/handle-info "2001:db8::1/64" :short? true))]
+      (is (str/includes? out "2001:db8::/64"))
+      (is (str/includes? out "2001:db8::ffff:ffff:ffff:ffff"))
+      (is (str/includes? out "18446744073709551616 addresses")))))
 
 ;;; ── handle-validate ──────────────────────────────────────────────────────────
 
@@ -203,13 +244,18 @@
   (testing "any invalid input → calls exit-empty!"
     (is (exits-empty? #(with-out-str (#'core/handle-validate ["10.0.0.0/24" "bad"])))))
 
-  (testing "valid CIDR type is reported"
+  (testing "valid IPv4 CIDR type is reported"
     (let [out (with-out-str (#'core/handle-validate ["10.0.0.0/8"]))]
-      (is (str/includes? out "cidr"))))
+      (is (str/includes? out "ipv4-cidr"))))
 
-  (testing "valid IP type is reported"
+  (testing "valid IPv4 IP type is reported"
     (let [out (with-out-str (#'core/handle-validate ["10.0.0.1"]))]
-      (is (str/includes? out "ip"))))
+      (is (str/includes? out "ipv4"))))
+
+  (testing "valid IPv6 input types are reported"
+    (let [out (with-out-str (#'core/handle-validate ["2001:db8::1" "2001:db8::/64"]))]
+      (is (str/includes? out "ipv6"))
+      (is (str/includes? out "ipv6-cidr"))))
 
   (testing "invalid input shows FAIL and error message"
     (let [out (with-out-str
@@ -228,7 +274,7 @@
       (is (= 2 (count data)))
       (is (true?  (:valid (first data))))
       (is (false? (:valid (second data))))
-      (is (= "cidr" (:type (first data)))))))
+      (is (= "ipv4-cidr" (:type (first data)))))))
 
 ;;; ── stdin fallback ───────────────────────────────────────────────────────────
 
@@ -353,6 +399,28 @@
       (is (= 1 (count (:results data))))
       (is (true? (:match (first (:results data)))))))
 
+  (testing "IPv6 text output shows yes/no"
+    (let [o (with-out-str (#'core/handle-contains ["2001:db8::/64"
+                                                   "2001:db8::"
+                                                   "2001:db9::1"]))]
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "yes"))
+      (is (str/includes? o "no"))
+      (is (str/includes? o "(network address)"))))
+
+  (testing "IPv6 JSON emits normalized subnet and results"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-contains ["2001:db8::1/64" "2001:db8::1"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "2001:db8::/64" (:subnet data)))
+      (is (= "2001:db8::1" (-> data :results first :ip)))
+      (is (true? (-> data :results first :match)))))
+
+  (testing "mixed address families die"
+    (is (dies-with?
+          #(#'core/handle-contains ["2001:db8::/64" "10.0.0.1"])
+          #"Mixed address families")))
+
   (testing "no matches calls exit-empty!"
     (is (exits-empty? #(with-out-str (#'core/handle-contains ["10.0.0.0/24" "192.168.1.1"])))))
 
@@ -373,7 +441,25 @@
       (is (= "10.0.0.128/25" (-> data :free first :cidr)))))
 
   (testing "fully allocated calls exit-empty!"
-    (is (exits-empty? #(with-out-str (#'core/handle-free ["10.0.0.0/24" "10.0.0.0/24"]))))))
+    (is (exits-empty? #(with-out-str (#'core/handle-free ["10.0.0.0/24" "10.0.0.0/24"])))))
+
+  (testing "IPv6 text output shows free blocks"
+    (let [o (with-out-str (#'core/handle-free ["2001:db8::/63" "2001:db8::/64"]))]
+      (is (str/includes? o "2001:db8:0:1::/64"))
+      (is (str/includes? o "Addresses"))))
+
+  (testing "IPv6 JSON emits address counts"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-free ["2001:db8::/63" "2001:db8::/64"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "ipv6" (:family data)))
+      (is (= "2001:db8::/63" (:parent data)))
+      (is (= "2001:db8:0:1::/64" (-> data :free first :cidr)))
+      (is (= "18446744073709551616" (-> data :free first :addresses)))))
+
+  (testing "mixed address families die"
+    (is (dies-with? #(#'core/handle-free ["2001:db8::/64" "10.0.0.0/24"])
+                    #"single address family"))))
 
 (deftest handle-plan-test
   (testing "text output shows VLSM allocation table"
@@ -392,7 +478,26 @@
     (is (dies-with? #(#'core/handle-plan ["10.0.0.0/24" "abc"]) #"Invalid host count")))
 
   (testing "host count < 1 dies"
-    (is (dies-with? #(#'core/handle-plan ["10.0.0.0/24" "0"]) #"must be"))))
+    (is (dies-with? #(#'core/handle-plan ["10.0.0.0/24" "0"]) #"must be")))
+
+  (testing "IPv6 prefix plan text output shows allocations"
+    (let [o (with-out-str (#'core/handle-plan ["2001:db8::/60" "/64" "/64"]))]
+      (is (str/includes? o "IPv6 prefix plan"))
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "2001:db8:0:1::/64"))))
+
+  (testing "IPv6 prefix plan JSON emits requested prefixes"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-plan ["2001:db8::/60" "/64" "/64"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "ipv6" (:family data)))
+      (is (= "2001:db8::/60" (:parent data)))
+      (is (= ["/64" "/64"] (mapv :requested (:allocations data))))
+      (is (= "2001:db8::/64" (-> data :allocations first :cidr)))))
+
+  (testing "IPv6 plan requires prefix requests"
+    (is (dies-with? #(#'core/handle-plan ["2001:db8::/60" "64"])
+                    #"prefix requests"))))
 
 (deftest handle-lpm-test
   (testing "text output shows best match for each IP"
@@ -413,7 +518,22 @@
     (is (dies-with? #(#'core/handle-lpm ["10.0.0.1"]) #"at least one route")))
 
   (testing "missing IPs dies"
-    (is (dies-with? #(#'core/handle-lpm ["10.0.0.0/24"]) #"at least one IP"))))
+    (is (dies-with? #(#'core/handle-lpm ["10.0.0.0/24"]) #"at least one IP")))
+
+  (testing "IPv6 text output shows best match"
+    (let [o (with-out-str (#'core/handle-lpm ["2001:db8::/32" "2001:db8::/64" "2001:db8::1"]))]
+      (is (str/includes? o "2001:db8::/64"))))
+
+  (testing "IPv6 JSON emits match and prefix"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-lpm ["2001:db8::/32" "2001:db8::/64" "2001:db8::1"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "2001:db8::/64" (-> data :results first :match)))
+      (is (= 64 (-> data :results first :prefix)))))
+
+  (testing "mixed address families die"
+    (is (dies-with? #(#'core/handle-lpm ["10.0.0.0/8" "2001:db8::1"])
+                    #"single address family"))))
 
 (deftest handle-diff-test
   (testing "text output shows added and removed entries"
@@ -435,7 +555,20 @@
     (is (dies-with? #(#'core/handle-diff [] ["10.0.0.0/24"]) #"before")))
 
   (testing "nil after dies"
-    (is (dies-with? #(#'core/handle-diff ["10.0.0.0/24"] nil) #"separator"))))
+    (is (dies-with? #(#'core/handle-diff ["10.0.0.0/24"] nil) #"separator")))
+
+  (testing "IPv6 JSON emits added/removed/unchanged"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-diff ["2001:db8::/63"]
+                                                   ["2001:db8::/64" "2001:db8:0:2::/64"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= ["2001:db8:0:2::/64"] (:added data)))
+      (is (= ["2001:db8:0:1::/64"] (:removed data)))
+      (is (= ["2001:db8::/64"] (:unchanged data)))))
+
+  (testing "mixed address families die"
+    (is (dies-with? #(#'core/handle-diff ["10.0.0.0/24"] ["2001:db8::/64"])
+                    #"single address family"))))
 
 (deftest handle-range-test
   (testing "text output shows range and CIDR count"
@@ -456,7 +589,30 @@
       (is (= 1 (count (:cidrs data))))))
 
   (testing "start > end dies"
-    (is (dies-with? #(#'core/handle-range ["10.0.0.255" "10.0.0.0"]) #"must be"))))
+    (is (dies-with? #(#'core/handle-range ["10.0.0.255" "10.0.0.0"]) #"must be")))
+
+  (testing "IPv6 text output shows range"
+    (let [o (with-out-str (#'core/handle-range ["2001:db8::" "2001:db8::ffff"]))]
+      (is (str/includes? o "2001:db8::/112"))
+      (is (str/includes? o "65536 addresses"))))
+
+  (testing "IPv6 +count syntax"
+    (let [o (with-out-str (#'core/handle-range ["2001:db8::" "+65536"]))]
+      (is (str/includes? o "2001:db8::/112"))))
+
+  (testing "IPv6 JSON emits family and string total"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-range ["2001:db8::" "2001:db8::ffff"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "ipv6" (:family data)))
+      (is (= "2001:db8::" (:start data)))
+      (is (= "2001:db8::ffff" (:end data)))
+      (is (= "65536" (:total data)))
+      (is (= ["2001:db8::/112"] (:cidrs data)))))
+
+  (testing "mixed address families die"
+    (is (dies-with? #(#'core/handle-range ["10.0.0.1" "2001:db8::1"])
+                    #"same family"))))
 
 (deftest handle-util-test
   (testing "text output shows utilization stats"
@@ -469,7 +625,26 @@
                                (#'core/handle-util ["10.0.0.0/24" "10.0.0.0/25"])))
           data (json/read-str out :key-fn keyword)]
       (is (= "10.0.0.0/24" (:parent data)))
-      (is (number? (:pct_used data))))))
+      (is (number? (:pct_used data)))))
+
+  (testing "IPv6 text output shows utilization stats"
+    (let [o (with-out-str (#'core/handle-util ["2001:db8::/63" "2001:db8::/64"]))]
+      (is (str/includes? o "2001:db8::/63"))
+      (is (str/includes? o "Allocated"))
+      (is (str/includes? o "18446744073709551616"))))
+
+  (testing "IPv6 JSON emits string address counts"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-util ["2001:db8::/63" "2001:db8::/64"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "ipv6" (:family data)))
+      (is (= "36893488147419103232" (:total_addresses data)))
+      (is (= "18446744073709551616" (:used_addresses data)))
+      (is (= 50 (:pct_used data)))))
+
+  (testing "mixed address families die"
+    (is (dies-with? #(#'core/handle-util ["2001:db8::/63" "10.0.0.0/24"])
+                    #"single address family"))))
 
 (deftest handle-analyze-test
   (testing "text output shows route analysis from stdin"
@@ -486,6 +661,22 @@
           data (json/read-str out :key-fn keyword)]
       (is (= 2 (:route_count data)))
       (is (= 1 (:aggregated_count data)))))
+
+  (testing "IPv6 route analysis from stdin"
+    (let [out  (with-out-str
+                 (with-in-str "2001:db8::/64\n2001:db8:0:1::/64\n"
+                   (binding [core/*json?* true]
+                     (#'core/handle-analyze []))))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "ipv6" (:family data)))
+      (is (= 2 (:route_count data)))
+      (is (= 1 (:aggregated_count data)))
+      (is (= "2001:db8::/63" (-> data :groups first :summary)))))
+
+  (testing "mixed-family route analysis dies before dispatch"
+    (is (dies-with? #(with-in-str "10.0.0.0/24\n2001:db8::/64\n"
+                       (#'core/handle-analyze []))
+                    #"single address family")))
 
   (testing "no routes found dies"
     (is (dies-with? #(with-in-str "not a route table\n" (#'core/handle-analyze []))
@@ -510,7 +701,24 @@
       (is (= "10.0.0.128/25" (:cidr data)))))
 
   (testing "no space available dies"
-    (is (dies-with? #(#'core/handle-allocate ["10.0.0.0/30" "1000"]) #"No available block"))))
+    (is (dies-with? #(#'core/handle-allocate ["10.0.0.0/30" "1000"]) #"No available block")))
+
+  (testing "IPv6 prefix allocation text output shows allocated prefix"
+    (let [o (with-out-str (#'core/handle-allocate ["2001:db8::/60" "/64"]))]
+      (is (str/includes? o "Allocate /64"))
+      (is (str/includes? o "2001:db8::/64"))))
+
+  (testing "IPv6 prefix allocation skips used space"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-allocate ["2001:db8::/60" "/64" "2001:db8::/64"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "2001:db8:0:1::/64" (:cidr data)))
+      (is (= "/64" (:requested data)))
+      (is (= 64 (:requested_prefix data)))))
+
+  (testing "IPv6 allocation requires a prefix request"
+    (is (dies-with? #(#'core/handle-allocate ["2001:db8::/60" "64"])
+                    #"prefix request"))))
 
 (deftest handle-mask-success-test
   (testing "text output shows prefix, mask, and wildcard"
@@ -554,7 +762,21 @@
     (let [out  (with-out-str (binding [core/*json?* true]
                                (#'core/handle-supernet ["10.0.0.0/24" "10.0.1.0/24"])))
           data (json/read-str out :key-fn keyword)]
-      (is (= "10.0.0.0/23" (:result data))))))
+      (is (= "10.0.0.0/23" (:result data)))))
+
+  (testing "IPv6 text output shows supernet"
+    (let [o (with-out-str (#'core/handle-supernet ["2001:db8::/64" "2001:db8:0:1::/64"]))]
+      (is (str/includes? o "2001:db8::/63"))))
+
+  (testing "IPv6 JSON emits result"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-supernet ["2001:db8::/64" "2001:db8:0:1::/64"])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "2001:db8::/63" (:result data)))))
+
+  (testing "mixed address families die"
+    (is (dies-with? #(#'core/handle-supernet ["10.0.0.0/24" "2001:db8::/64"])
+                    #"single address family"))))
 
 ;;; ── text output for handlers tested only via JSON ────────────────────────────
 
@@ -569,7 +791,11 @@
 (deftest handle-aggregate-text-output-test
   (testing "text output shows aggregated result"
     (let [o (with-out-str (#'core/handle-aggregate ["10.0.0.0/24" "10.0.1.0/24"]))]
-      (is (str/includes? o "10.0.0.0/23")))))
+      (is (str/includes? o "10.0.0.0/23"))))
+
+  (testing "mixed address families die"
+    (is (dies-with? #(#'core/handle-aggregate ["10.0.0.0/24" "2001:db8::/64"])
+                    #"single address family"))))
 
 (deftest handle-contains-error-paths-test
   (testing "missing CIDR dies"

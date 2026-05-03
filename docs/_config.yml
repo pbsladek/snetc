@@ -1,7 +1,7 @@
 remote_theme: just-the-docs/just-the-docs@v0.10.0
 
 title: snetc
-description: IPv4 subnet calculator for the command line
+description: IPv4 and IPv6 subnet calculator for the command line
 
 color_scheme: dark
 

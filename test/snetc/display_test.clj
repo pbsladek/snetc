@@ -2,6 +2,7 @@
   (:require [clojure.test   :refer [deftest is testing]]
             [clojure.string :as str]
             [snetc.display  :as display]
+            [snetc.addr     :as addr]
             [snetc.subnet   :as subnet]
             [snetc.ip       :as ip]
             [snetc.ops      :as ops]
@@ -25,7 +26,16 @@
   (testing "/32 omits broadcast"
     (let [o (captured #(display/print-subnet-info (subnet/subnet-info "10.0.0.1/32")))]
       (is (str/includes? o "10.0.0.1/32"))
-      (is (not (str/includes? o "Broadcast"))))))
+      (is (not (str/includes? o "Broadcast")))))
+
+  (testing "IPv6 shows address range fields"
+    (let [o (captured #(display/print-subnet-info (addr/subnet-info "2001:db8::1/64")))]
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "First Address"))
+      (is (str/includes? o "Last Address"))
+      (is (str/includes? o "18446744073709551616"))
+      (is (not (str/includes? o "Broadcast")))
+      (is (not (str/includes? o "Subnet Mask"))))))
 
 ;;; ── print-subnet-info-json ───────────────────────────────────────────────────
 
@@ -38,7 +48,14 @@
 
   (testing "/32 JSON omits broadcast"
     (let [o (captured #(display/print-subnet-info-json (subnet/subnet-info "10.0.0.1/32")))]
-      (is (not (str/includes? o "broadcast"))))))
+      (is (not (str/includes? o "broadcast")))))
+
+  (testing "IPv6 JSON emits address range keys"
+    (let [o (captured #(display/print-subnet-info-json (addr/subnet-info "2001:db8::1/64")))]
+      (is (str/includes? o "\"family\":\"ipv6\""))
+      (is (str/includes? o "\"first_address\""))
+      (is (str/includes? o "\"addresses\":\"18446744073709551616\""))
+      (is (not (str/includes? o "\"mask\""))))))
 
 ;;; ── print-split-table ────────────────────────────────────────────────────────
 
@@ -76,8 +93,10 @@
 (deftest print-contains-result-test
   (testing "shows yes for matching and no for non-matching IPs"
     (let [info (subnet/subnet-info "10.0.0.0/24")
-          ips  ["10.0.0.1" "192.168.1.1" "10.0.0.0"]
-          o    (captured #(display/print-contains-result info ips))]
+          results [{:ip "10.0.0.1" :match true :role "host"}
+                   {:ip "192.168.1.1" :match false :role nil}
+                   {:ip "10.0.0.0" :match true :role "network"}]
+          o    (captured #(display/print-contains-result info results))]
       (is (str/includes? o "10.0.0.0/24"))
       (is (str/includes? o "yes"))
       (is (str/includes? o "no"))
@@ -85,9 +104,19 @@
 
   (testing "shows broadcast address note"
     (let [info (subnet/subnet-info "10.0.0.0/24")
-          ips  ["10.0.0.255"]
-          o    (captured #(display/print-contains-result info ips))]
-      (is (str/includes? o "(broadcast address)")))))
+          results [{:ip "10.0.0.255" :match true :role "broadcast"}]
+          o    (captured #(display/print-contains-result info results))]
+      (is (str/includes? o "(broadcast address)"))))
+
+  (testing "accepts precomputed IPv6 result maps"
+    (let [info    (addr/subnet-info "2001:db8::/64")
+          results [{:ip "2001:db8::" :match true :role "network"}
+                   {:ip "2001:db9::1" :match false :role nil}]
+          o       (captured #(display/print-contains-result info results))]
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "yes"))
+      (is (str/includes? o "no"))
+      (is (str/includes? o "(network address)")))))
 
 ;;; ── print-free-result ────────────────────────────────────────────────────────
 
@@ -101,7 +130,14 @@
 
   (testing "fully allocated shows none message"
     (let [o (captured #(display/print-free-result "10.0.0.0/24" ["10.0.0.0/24"] []))]
-      (is (str/includes? o "none")))))
+      (is (str/includes? o "none"))))
+
+  (testing "IPv6 free result shows address counts"
+    (let [infos [(addr/subnet-info "2001:db8:0:1::/64")]
+          o     (captured #(display/print-free-result "2001:db8::/63" ["2001:db8::/64"] infos))]
+      (is (str/includes? o "Addresses"))
+      (is (str/includes? o "2001:db8:0:1::/64"))
+      (is (str/includes? o "18446744073709551616")))))
 
 ;;; ── print-diff-result ────────────────────────────────────────────────────────
 
@@ -151,7 +187,15 @@
       (is (str/includes? o "RFC 1918"))
       (is (str/includes? o "no"))
       (is (str/includes? o "8.8.8.8"))
-      (is (str/includes? o "yes")))))
+      (is (str/includes? o "yes"))))
+
+  (testing "wide IPv6 inputs do not overwrite category output"
+    (let [cs [(classify/classify "2001:4860:4860::8888")
+              (classify/classify "2001:db8::/31")]
+          o  (captured #(display/print-classify-result cs))]
+      (is (str/includes? o "2001:4860:4860::8888"))
+      (is (str/includes? o "Documentation → Public"))
+      (is (str/includes? o "RFC 3849")))))
 
 ;;; ── print-range-result ───────────────────────────────────────────────────────
 
@@ -160,10 +204,21 @@
     (let [cidrs (vec (subnet/range->cidrs
                        (ip/ip->long "10.0.0.0")
                        (ip/ip->long "10.0.0.255")))
-          o     (captured #(display/print-range-result "10.0.0.0" "10.0.0.255" cidrs))]
+          o     (captured #(display/print-range-result "10.0.0.0"
+                                                        "10.0.0.255"
+                                                        256
+                                                        cidrs))]
       (is (str/includes? o "10.0.0.0"))
       (is (str/includes? o "10.0.0.255"))
-      (is (str/includes? o "1 CIDR block")))))
+      (is (str/includes? o "1 CIDR block"))))
+
+  (testing "accepts precomputed IPv6 totals"
+    (let [o (captured #(display/print-range-result "2001:db8::"
+                                                    "2001:db8::ffff"
+                                                    65536N
+                                                    ["2001:db8::/112"]))]
+      (is (str/includes? o "65536 addresses"))
+      (is (str/includes? o "2001:db8::/112")))))
 
 ;;; ── print-vlsm-result ────────────────────────────────────────────────────────
 
@@ -174,7 +229,15 @@
       (is (str/includes? o "VLSM plan"))
       (is (str/includes? o "192.168.0.0/22"))
       (is (str/includes? o "200"))
-      (is (str/includes? o "50")))))
+      (is (str/includes? o "50"))))
+
+  (testing "shows IPv6 prefix plan table"
+    (let [allocs (ops/plan-prefixes "2001:db8::/60" [64 64])
+          o      (captured #(display/print-vlsm-result "2001:db8::/60" allocs))]
+      (is (str/includes? o "IPv6 prefix plan"))
+      (is (str/includes? o "/64"))
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "18446744073709551616")))))
 
 ;;; ── print-overlaps-result ────────────────────────────────────────────────────
 
@@ -220,7 +283,14 @@
     (let [result (ops/utilization-info "10.0.0.0/24"
                                        ["10.0.0.64/26" "10.0.0.192/26"])
           o      (captured #(display/print-util-result result))]
-      (is (str/includes? o "Fragmentation")))))
+      (is (str/includes? o "Fragmentation"))))
+
+  (testing "shows IPv6 utilization rows"
+    (let [result (ops/utilization-info "2001:db8::/63" ["2001:db8::/64"])
+          o      (captured #(display/print-util-result result))]
+      (is (str/includes? o "2001:db8::/63"))
+      (is (str/includes? o "Allocated"))
+      (is (str/includes? o "18446744073709551616")))))
 
 ;;; ── print-analyze-result ─────────────────────────────────────────────────────
 
@@ -239,7 +309,13 @@
   (testing "containment relationships are shown"
     (let [result (ops/analyze-routes ["10.0.0.0/8" "10.0.0.0/24"])
           o      (captured #(display/print-analyze-result result))]
-      (is (str/includes? o "Containment")))))
+      (is (str/includes? o "Containment"))))
+
+  (testing "IPv6 summarization relationships are shown"
+    (let [result (ops/analyze-routes ["2001:db8::/64" "2001:db8:0:1::/64"])
+          o      (captured #(display/print-analyze-result result))]
+      (is (str/includes? o "2001:db8::/63"))
+      (is (str/includes? o "Summarization")))))
 
 ;;; ── print-json ───────────────────────────────────────────────────────────────
 
@@ -264,7 +340,15 @@
     (let [info (subnet/subnet-info "10.0.0.128/25")
           o    (captured #(display/print-allocate-result "10.0.0.0/24"
                                                           ["10.0.0.0/25"] 100 info))]
-      (is (str/includes? o "Excluding")))))
+      (is (str/includes? o "Excluding"))))
+
+  (testing "shows IPv6 prefix allocation details"
+    (let [info (addr/subnet-info "2001:db8::/64")
+          o    (captured #(display/print-allocate-result "2001:db8::/60" [] "/64" info))]
+      (is (str/includes? o "Allocate /64"))
+      (is (str/includes? o "First Address"))
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "18446744073709551616")))))
 
 ;;; ── print-subnet-info-short ──────────────────────────────────────────────────
 
@@ -276,7 +360,15 @@
       (is (str/includes? o "10.0.0.0/24"))
       (is (str/includes? o "10.0.0.1"))
       (is (str/includes? o "10.0.0.254"))
-      (is (str/includes? o "255.255.255.0")))))
+      (is (str/includes? o "255.255.255.0"))))
+
+  (testing "IPv6 short output uses address count"
+    (let [info (addr/subnet-info "2001:db8::1/64")
+          o    (str/trim (captured #(display/print-subnet-info-short info)))]
+      (is (= 1 (count (str/split-lines o))))
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "2001:db8::ffff:ffff:ffff:ffff"))
+      (is (str/includes? o "18446744073709551616 addresses")))))
 
 ;;; ── print-adjacent-result ────────────────────────────────────────────────────
 

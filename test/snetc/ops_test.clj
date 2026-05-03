@@ -2,7 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [snetc.subnet :refer [cidr->range]]
             [snetc.ops    :refer [aggregate free-space cidr-diff
-                                  hosts->min-prefix next-available plan-vlsm
+                                  hosts->min-prefix next-available next-available-prefix
+                                  plan-vlsm plan-prefixes
                                   find-overlaps longest-prefix-match
                                   supernet utilization-info
                                   analyze-routes parse-routes]]))
@@ -42,7 +43,17 @@
 
   (testing "aggregate is idempotent"
     (let [cidrs ["10.0.0.0/24" "10.0.1.0/24" "192.168.0.0/22" "172.16.0.0/12"]]
-      (is (= (aggregate cidrs) (aggregate (aggregate cidrs)))))))
+      (is (= (aggregate cidrs) (aggregate (aggregate cidrs))))))
+
+  (testing "adjacent IPv6 networks merge"
+    (is (= ["2001:db8::/63"]
+           (aggregate ["2001:db8::/64" "2001:db8:0:1::/64"]))))
+
+  (testing "mixed address families are rejected"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"single address family"
+          (aggregate ["10.0.0.0/24" "2001:db8::/64"])))))
 
 ;;; ── free-space ───────────────────────────────────────────────────────────────
 
@@ -87,7 +98,21 @@
           [as ae]   (cidr->range (first all))]
       (is (= 1  (count all)))
       (is (= ps as))
-      (is (= pe ae)))))
+      (is (= pe ae))))
+
+  (testing "IPv6 free space subtracts same-family allocations"
+    (is (= ["2001:db8:0:1::/64"]
+           (free-space "2001:db8::/63" ["2001:db8::/64"]))))
+
+  (testing "IPv6 allocations outside parent are ignored"
+    (is (= ["2001:db8::/64"]
+           (free-space "2001:db8::/64" ["2001:db9::/64"]))))
+
+  (testing "mixed address families are rejected"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"single address family"
+          (free-space "2001:db8::/64" ["10.0.0.0/24"])))))
 
 ;;; ── hosts->min-prefix ────────────────────────────────────────────────────────
 
@@ -173,7 +198,19 @@
 
   (testing "N networks with N*(N-1)/2 pairwise overlaps"
     ;; /8 contains /16 contains /24 → 3 pairs
-    (is (= 3 (count (find-overlaps ["10.0.0.0/8" "10.0.0.0/16" "10.0.0.0/24"]))))))
+    (is (= 3 (count (find-overlaps ["10.0.0.0/8" "10.0.0.0/16" "10.0.0.0/24"])))))
+
+  (testing "IPv6 overlaps are reported"
+    (let [[overlap] (find-overlaps ["2001:db8::/63" "2001:db8::/64"])]
+      (is (= "2001:db8::/63" (:a overlap)))
+      (is (= "2001:db8::/64" (:b overlap)))
+      (is (= :a-contains-b (:type overlap)))))
+
+  (testing "mixed address families are rejected"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"single address family"
+          (find-overlaps ["10.0.0.0/24" "2001:db8::/64"])))))
 
 ;;; ── longest-prefix-match ─────────────────────────────────────────────────────
 
@@ -198,7 +235,18 @@
 
   (testing "network address and broadcast address of a block both match"
     (is (= "192.168.0.0/24" (longest-prefix-match "192.168.0.0"   ["192.168.0.0/24"])))
-    (is (= "192.168.0.0/24" (longest-prefix-match "192.168.0.255" ["192.168.0.0/24"])))))
+    (is (= "192.168.0.0/24" (longest-prefix-match "192.168.0.255" ["192.168.0.0/24"]))))
+
+  (testing "IPv6 longest prefix match"
+    (is (= "2001:db8::/64"
+           (longest-prefix-match "2001:db8::1"
+                                 ["2001:db8::/32" "2001:db8::/64"]))))
+
+  (testing "mixed route and lookup families are rejected"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"single address family"
+          (longest-prefix-match "2001:db8::1" ["10.0.0.0/8"])))))
 
 ;;; ── supernet ─────────────────────────────────────────────────────────────────
 
@@ -227,7 +275,17 @@
       (doseq [c inputs]
         (let [[s e] (cidr->range c)]
           (is (<= rs s))
-          (is (>= re e)))))))
+          (is (>= re e))))))
+
+  (testing "IPv6 adjacent networks produce the covering supernet"
+    (is (= "2001:db8::/63"
+           (supernet ["2001:db8::/64" "2001:db8:0:1::/64"]))))
+
+  (testing "mixed address families are rejected"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"single address family"
+          (supernet ["10.0.0.0/24" "2001:db8::/64"])))))
 
 ;;; ── cidr-diff ────────────────────────────────────────────────────────────────
 
@@ -279,7 +337,20 @@
     (let [r (cidr-diff ["10.0.0.0/24"] [])]
       (is (empty?             (:added   r)))
       (is (= ["10.0.0.0/24"] (:removed r)))
-      (is (empty?             (:unchanged r))))))
+      (is (empty?             (:unchanged r)))))
+
+  (testing "IPv6 diff reports added, removed, and unchanged"
+    (let [r (cidr-diff ["2001:db8::/63"]
+                       ["2001:db8::/64" "2001:db8:0:2::/64"])]
+      (is (= ["2001:db8:0:2::/64"] (:added r)))
+      (is (= ["2001:db8:0:1::/64"] (:removed r)))
+      (is (= ["2001:db8::/64"] (:unchanged r)))))
+
+  (testing "mixed address families are rejected"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"single address family"
+          (cidr-diff ["10.0.0.0/24"] ["2001:db8::/64"])))))
 
 ;;; ── next-available ───────────────────────────────────────────────────────────
 
@@ -303,6 +374,31 @@
 
   (testing "single host gets /32"
     (is (= "10.0.0.0/32" (next-available "10.0.0.0/24" [] 1)))))
+
+(deftest next-available-prefix-test
+  (testing "returns first aligned IPv6 prefix block"
+    (is (= "2001:db8::/64"
+           (next-available-prefix "2001:db8::/60" [] 64))))
+
+  (testing "skips used IPv6 prefixes"
+    (is (= "2001:db8:0:1::/64"
+           (next-available-prefix "2001:db8::/60" ["2001:db8::/64"] 64))))
+
+  (testing "returns nil when no requested prefix fits"
+    (is (nil? (next-available-prefix "2001:db8::/64" ["2001:db8::/64"] 64)))))
+
+(deftest plan-prefixes-test
+  (testing "allocates IPv6 prefixes largest-first"
+    (let [result (plan-prefixes "2001:db8::/60" [64 64])]
+      (is (= ["2001:db8::/64" "2001:db8:0:1::/64"]
+             (mapv #(-> % :info :cidr) result)))
+      (is (= ["/64" "/64"] (mapv :requested result)))))
+
+  (testing "rejects a requested prefix wider than the parent"
+    (is (thrown? Exception (plan-prefixes "2001:db8::/64" [63]))))
+
+  (testing "throws when combined prefix requests exceed the parent"
+    (is (thrown? Exception (plan-prefixes "2001:db8::/127" [128 128 128])))))
 
 ;;; ── utilization-info ─────────────────────────────────────────────────────────
 
@@ -336,7 +432,16 @@
 
   (testing "bar string has the expected width"
     (let [r (utilization-info "10.0.0.0/24" ["10.0.0.0/25"])]
-      (is (= 72 (count (:bar r)))))))
+      (is (= 72 (count (:bar r))))))
+
+  (testing "IPv6 utilization uses address counts and free blocks"
+    (let [r (utilization-info "2001:db8::/63" ["2001:db8::/64"])]
+      (is (= :ipv6 (:family (:parent-info r))))
+      (is (= 36893488147419103232N (:total-addrs r)))
+      (is (= 18446744073709551616N (:used-addrs r)))
+      (is (= 18446744073709551616N (:free-addrs r)))
+      (is (= 50 (:pct-used r)))
+      (is (= "2001:db8:0:1::/64" (-> r :free-infos first :cidr))))))
 
 ;;; ── parse-routes ──────────────────────────────���──────────────────────────────
 
@@ -359,6 +464,10 @@
   (testing "normalises host bits in CIDRs"
     (let [r (parse-routes "10.0.0.5/24\n")]
       (is (= ["10.0.0.0/24"] r))))
+
+  (testing "extracts and normalises IPv6 CIDRs"
+    (is (= ["2001:db8::/64" "2001:db8:0:1::/64"]
+           (parse-routes "2001:db8::1/64 dev eth0\n2001:db8:0:1::/64 via fe80::1\n"))))
 
   (testing "returns distinct CIDRs"
     (is (= 1 (count (parse-routes "10.0.0.0/24\n10.0.0.0/24\n")))))
@@ -392,4 +501,18 @@
   (testing "routes accessor preserves input"
     (let [routes ["10.0.0.0/24" "10.0.1.0/24"]
           r      (analyze-routes routes)]
-      (is (= routes (:routes r))))))
+      (is (= routes (:routes r)))))
+
+  (testing "IPv6 summarizable routes show savings and groups"
+    (let [r (analyze-routes ["2001:db8::/64" "2001:db8:0:1::/64"])]
+      (is (= :ipv6 (:family r)))
+      (is (= 2 (:route-count r)))
+      (is (= 1 (:aggregated-count r)))
+      (is (= 1 (:savings r)))
+      (is (= "2001:db8::/63" (-> r :groups first :summary)))))
+
+  (testing "mixed address families are rejected"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"single address family"
+          (analyze-routes ["10.0.0.0/24" "2001:db8::/64"])))))

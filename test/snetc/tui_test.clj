@@ -302,6 +302,9 @@
       (is (= "Split cancelled" (:message result))))))
 
 (deftest injected-run-loop-test
+  (when (= "dumb" (System/getenv "TERM"))
+    (is true "TERM=dumb skips injected run-loop terminal assertions"))
+
   (testing "run-tree! can be driven with an injected terminal adapter"
     (when-not (= "dumb" (System/getenv "TERM"))
       (let [events (atom [])
