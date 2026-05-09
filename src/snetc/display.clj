@@ -51,19 +51,36 @@
 (defn print-split-table
   "Prints a table of subnets to stdout."
   [subnets]
-  (let [fmt "  %-20s %-18s %-18s %-18s %-18s %s"]
-    (println)
-    (println (format fmt "Network/CIDR" "Subnet Mask" "First Host" "Last Host" "Broadcast" "Hosts"))
-    (println (apply str (repeat 110 "-")))
-    (doseq [s subnets]
-      (println (format fmt
-                       (:cidr       s)
-                       (:mask       s)
-                       (:first-host s)
-                       (:last-host  s)
-                       (or (:broadcast s) "-")
-                       (:hosts      s))))
-    (println)))
+  (if (= :ipv6 (:family (first subnets)))
+    (let [fmt "  %-43s %-39s %-39s %s"]
+      (println)
+      (println (format fmt "Network/CIDR" "First Address" "Last Address" "Addresses"))
+      (println (apply str (repeat 135 "-")))
+      (doseq [s subnets]
+        (println (format fmt
+                         (:cidr s)
+                         (:first-address s)
+                         (:last-address s)
+                         (:addresses s))))
+      (println))
+    (let [fmt "  %-20s %-18s %-18s %-18s %-18s %s"]
+      (println)
+      (println (format fmt "Network/CIDR" "Subnet Mask" "First Host" "Last Host" "Broadcast" "Hosts"))
+      (println (apply str (repeat 110 "-")))
+      (doseq [s subnets]
+        (println (format fmt
+                         (:cidr       s)
+                         (:mask       s)
+                         (:first-host s)
+                         (:last-host  s)
+                         (or (:broadcast s) "-")
+                         (:hosts      s))))
+      (println))))
+
+(defn- tree-summary [info]
+  (if (= :ipv6 (:family info))
+    (str (:addresses info) " addresses")
+    (str (:hosts info) " hosts")))
 
 (defn- tree-lines
   "Returns formatted lines for node, indented with ASCII box-drawing characters."
@@ -71,7 +88,7 @@
   (let [info     (:info node)
         children (:children node)
         branch   (if last? "└─ " "├─ ")
-        summary  (str prefix-str branch (:cidr info) "  [" (:hosts info) " hosts]")
+        summary  (str prefix-str branch (:cidr info) "  [" (tree-summary info) "]")
         child-px (str prefix-str (if last? "   " "│  "))]
     (cons summary
           (mapcat (fn [i child]
@@ -84,7 +101,7 @@
   [root]
   (let [info     (:info root)
         children (:children root)]
-    (println (str "\n" (:cidr info) "  [" (:hosts info) " hosts]"))
+    (println (str "\n" (:cidr info) "  [" (tree-summary info) "]"))
     (doseq [line (mapcat (fn [i child]
                            (tree-lines child "" (= i (dec (count children)))))
                          (range)
@@ -339,7 +356,7 @@
 (defn print-adjacent-result
   "Prints an adjacent block result to stdout."
   [input-cidr direction n result-cidr]
-  (println (format "\n%s  %s %d  =>  %s\n" input-cidr direction n result-cidr)))
+  (println (format "\n%s  %s %s  =>  %s\n" input-cidr direction n result-cidr)))
 
 (defn print-mask-result
   "Prints mask conversion results to stdout."

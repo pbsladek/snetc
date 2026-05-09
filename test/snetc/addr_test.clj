@@ -107,3 +107,37 @@
 
   (testing "out-of-range numeric addresses are rejected"
     (is (thrown? Exception (addr/address->text :ipv4 0x100000000N)))))
+
+(deftest split-subnets-test
+  (testing "IPv4 split works through the family-aware layer"
+    (is (= ["10.0.0.0/25" "10.0.0.128/25"]
+           (mapv :cidr (addr/split-subnets "10.0.0.0/24" 25)))))
+
+  (testing "IPv6 split returns normalized child CIDRs"
+    (is (= ["2001:db8::/64" "2001:db8:0:1::/64"]
+           (mapv :cidr (addr/split-subnets "2001:db8::/63" 64)))))
+
+  (testing "prefix validation is family-specific"
+    (is (thrown? Exception (addr/split-subnets "2001:db8::/64" 129)))
+    (is (thrown? Exception (addr/split-subnets "2001:db8::/64" 63)))))
+
+(deftest adjacent-cidr-test
+  (testing "IPv4 adjacent CIDRs remain supported"
+    (is (= "10.0.1.0/24" (addr/adjacent-cidr "10.0.0.0/24" 1N)))
+    (is (= "10.0.0.0/24" (addr/adjacent-cidr "10.0.1.0/24" -1N))))
+
+  (testing "IPv6 adjacent CIDRs use 128-bit address math"
+    (is (= "2001:db8:0:1::/64" (addr/adjacent-cidr "2001:db8::/64" 1N)))
+    (is (= "2001:db8::/64" (addr/adjacent-cidr "2001:db8:0:1::/64" -1N))))
+
+  (testing "adjacent CIDRs cannot leave the address family space"
+    (is (thrown? Exception (addr/adjacent-cidr "::/0" 1N)))
+    (is (thrown? Exception (addr/adjacent-cidr "::/128" -1N)))))
+
+(deftest subnet-tree-test
+  (testing "IPv6 subnet tree renders family-aware info at each node"
+    (let [tree (addr/subnet-tree "2001:db8::/63" 64)]
+      (is (= "2001:db8::/63" (-> tree :info :cidr)))
+      (is (= ["2001:db8::/64" "2001:db8:0:1::/64"]
+             (mapv #(-> % :info :cidr) (:children tree))))
+      (is (= :ipv6 (-> tree :children first :info :family))))))

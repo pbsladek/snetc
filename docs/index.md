@@ -51,8 +51,8 @@ sudo cp dist/snetc /usr/local/bin/snetc
 
 ```
 snetc <cidr>                              IPv4 or IPv6 subnet info
-snetc <cidr> --split <prefix>            List all /<prefix> IPv4 subnets
-snetc <cidr> --tree  <prefix>            Show IPv4 subnet split tree
+snetc <cidr> --split <prefix>            List all /<prefix> subnets
+snetc <cidr> --tree  <prefix>            Show subnet split tree
 snetc aggregate <cidr> [...]             Aggregate to minimal covering set
 snetc aggregate                          Read CIDRs from stdin
 snetc contains <cidr> <ip> [...]         Check IP containment
@@ -69,9 +69,9 @@ snetc analyze [<file>]                   Route table analysis
 snetc tree <cidr>                        Interactive IPv4 subnet planner
 ```
 
-Non-interactive set operations support IPv4 and IPv6, but each command expects
-one address family per invocation. The interactive tree planner and `--split`
-remain IPv4-only.
+Non-interactive operations support IPv4 and IPv6 where the command maps cleanly
+to both families, but each set-style command expects one address family per
+invocation. The interactive tree planner remains IPv4-only.
 
 ---
 

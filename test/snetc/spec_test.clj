@@ -124,7 +124,16 @@
     (is (check-sym `addr/address->text)))
 
   (testing "ip-in-cidr? returns boolean for matching families"
-    (is (check-sym `addr/ip-in-cidr?))))
+    (is (check-sym `addr/ip-in-cidr?)))
+
+  (testing "split-subnets returns family-aware subnet info"
+    (is (check-sym `addr/split-subnets)))
+
+  (testing "adjacent-cidr returns a valid same-family CIDR"
+    (is (check-sym `addr/adjacent-cidr)))
+
+  (testing "subnet-tree returns family-aware tree nodes"
+    (is (check-sym `addr/subnet-tree))))
 
 (deftest ip-generative
   (testing "ip->long / long->ip round-trip"
