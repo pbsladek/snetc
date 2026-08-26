@@ -306,3 +306,78 @@
                            (family-label (:family parsed-cidr)) " CIDR")
                       {:ip ip :cidr cidr})))
     (<= (:network parsed-cidr) (:addr parsed-ip) (:last parsed-cidr))))
+
+(def ^:private max-derived-blocks 65536)
+
+(defn split-subnets
+  "Returns a vector of /new-prefix subnets within cidr for IPv4 or IPv6."
+  [cidr new-prefix]
+  (let [{:keys [family prefix network]} (parse-cidr cidr)]
+    (when-not (valid-prefix? family new-prefix)
+      (throw (ex-info (str "New prefix must be 0-" (bits-for family)
+                           ", got: " new-prefix)
+                      {:cidr cidr :new-prefix new-prefix})))
+    (when (< new-prefix prefix)
+      (throw (ex-info (str "Split prefix /" new-prefix
+                           " must be >= base prefix /" prefix)
+                      {:cidr cidr :new-prefix new-prefix})))
+    (let [n    (pow2 (- new-prefix prefix))
+          size (address-count family new-prefix)]
+      (when (> n max-derived-blocks)
+        (throw (ex-info (str "Split would produce " n " subnets; limit is "
+                             max-derived-blocks ". Use --tree for hierarchical splitting.")
+                        {:cidr cidr :new-prefix new-prefix :count n})))
+      (mapv (fn [i]
+              (subnet-info (str (number->text family (+ network (* (bigint i) size)))
+                                "/" new-prefix)))
+            (range n)))))
+
+(defn adjacent-cidr
+  "Returns the CIDR n blocks after (positive n) or before (negative n) cidr.
+  Throws ex-info if the result would fall outside the address family space."
+  [cidr n]
+  (let [{:keys [family prefix network]} (parse-cidr cidr)
+        size    (address-count family prefix)
+        new-net (+ network (* (bigint n) size))]
+    (when (or (< new-net 0N)
+              (> (last-addr family new-net prefix) (max-address family)))
+      (throw (ex-info (str "Adjacent block falls outside valid "
+                           (family-label family) " range")
+                      {:cidr cidr :n n})))
+    (str (number->text family new-net) "/" prefix)))
+
+(defn- tree-leaf-count [prefix max-prefix]
+  (pow2 (- max-prefix prefix)))
+
+(defn- guard-tree-size! [cidr family prefix max-prefix]
+  (when-not (valid-prefix? family max-prefix)
+    (throw (ex-info (str "Max prefix must be 0-" (bits-for family)
+                         ", got: " max-prefix)
+                    {:cidr cidr :max-prefix max-prefix})))
+  (when (< max-prefix prefix)
+    (throw (ex-info (str "Max prefix /" max-prefix
+                         " must be >= base prefix /" prefix)
+                    {:cidr cidr :max-prefix max-prefix})))
+  (let [leaves (tree-leaf-count prefix max-prefix)
+        nodes  (dec (* 2N leaves))]
+    (when (> leaves max-derived-blocks)
+      (throw (ex-info (str "Subnet tree would produce " leaves
+                           " leaf subnet(s) and " nodes
+                           " total node(s); limit is " max-derived-blocks
+                           " leaf subnet(s).")
+                      {:cidr cidr
+                       :max-prefix max-prefix
+                       :leaves leaves
+                       :nodes nodes
+                       :limit max-derived-blocks})))))
+
+(defn subnet-tree
+  "Returns a tree splitting cidr down to max-prefix. Each node is {:info :children}."
+  [cidr max-prefix]
+  (let [{:keys [family prefix cidr]} (parse-cidr cidr)
+        info (subnet-info cidr)]
+    (guard-tree-size! cidr family prefix max-prefix)
+    {:info     info
+     :children (when (< prefix max-prefix)
+                 (mapv #(subnet-tree (:cidr %) max-prefix)
+                       (split-subnets cidr (inc prefix))))}))

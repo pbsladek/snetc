@@ -65,7 +65,15 @@
           o    (captured #(display/print-split-table subs))]
       (is (str/includes? o "Network/CIDR"))
       (is (str/includes? o "10.0.0.0/25"))
-      (is (str/includes? o "10.0.0.128/25")))))
+      (is (str/includes? o "10.0.0.128/25"))))
+
+  (testing "IPv6 split table shows address ranges"
+    (let [subs (addr/split-subnets "2001:db8::/63" 64)
+          o    (captured #(display/print-split-table subs))]
+      (is (str/includes? o "First Address"))
+      (is (str/includes? o "Last Address"))
+      (is (str/includes? o "2001:db8:0:1::/64"))
+      (is (str/includes? o "18446744073709551616")))))
 
 ;;; ── print-subnet-tree ────────────────────────────────────────────────────────
 
@@ -75,7 +83,15 @@
           o    (captured #(display/print-subnet-tree tree))]
       (is (str/includes? o "10.0.0.0/24"))
       (is (str/includes? o "10.0.0.0/25"))
-      (is (str/includes? o "10.0.0.128/25")))))
+      (is (str/includes? o "10.0.0.128/25"))))
+
+  (testing "IPv6 tree shows address counts instead of hosts"
+    (let [tree (addr/subnet-tree "2001:db8::/63" 64)
+          o    (captured #(display/print-subnet-tree tree))]
+      (is (str/includes? o "2001:db8::/63"))
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "addresses"))
+      (is (not (str/includes? o "nil hosts"))))))
 
 ;;; ── print-aggregate-result ───────────────────────────────────────────────────
 

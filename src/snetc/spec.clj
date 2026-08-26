@@ -205,6 +205,14 @@
          #(s/valid? ::family (:family %))
          #(<= 0 (:start %) (:end %) (max-addr-for-family (:family %)))))
 
+(s/def ::addr-tree-node
+  (s/and map?
+         #(s/valid? ::addr-info-map (:info %))
+         #(or (not (contains? % :children))
+              (s/valid? ::addr-tree-children (:children %)))))
+(s/def ::addr-tree-children
+  (s/nilable (s/coll-of ::addr-tree-node :kind vector?)))
+
 ;; Keys for classify results.
 (s/def ::input      string?)
 (s/def ::name       (s/and string? seq))
@@ -318,6 +326,35 @@
           #(gen/one-of [(gen/tuple (s/gen ::ip-str) (s/gen ::cidr-str))
                         (gen/tuple (s/gen ::ipv6-str) (s/gen ::ipv6-cidr-str))]))
   :ret  boolean?)
+
+(s/fdef addr/split-subnets
+  :args (s/with-gen
+          (s/and (s/cat :cidr ::addr-cidr-str :new-prefix ::requested-prefix)
+                 (fn [{:keys [cidr new-prefix]}]
+                   (prefix-valid-for-parent? cidr new-prefix)))
+          #(gen/elements [["10.0.0.0/24" 25]
+                          ["10.0.0.0/31" 32]
+                          ["2001:db8::/63" 64]
+                          ["2001:db8::/127" 128]]))
+  :ret  (s/coll-of ::addr-info-map :kind vector?))
+
+(s/fdef addr/adjacent-cidr
+  :args (s/with-gen
+          (s/cat :cidr ::addr-cidr-str :n integer?)
+          #(gen/elements [["10.0.0.0/24" 1N]
+                          ["10.0.1.0/24" -1N]
+                          ["2001:db8::/64" 1N]
+                          ["2001:db8:0:1::/64" -1N]]))
+  :ret  ::addr-cidr-str)
+
+(s/fdef addr/subnet-tree
+  :args (s/with-gen
+          (s/and (s/cat :cidr ::addr-cidr-str :max-prefix ::requested-prefix)
+                 (fn [{:keys [cidr max-prefix]}]
+                   (prefix-valid-for-parent? cidr max-prefix)))
+          #(gen/elements [["10.0.0.0/24" 25]
+                          ["2001:db8::/63" 64]]))
+  :ret  ::addr-tree-node)
 
 ;; ── snetc.ip ──────────────────────────────────────────────────────────────────
 

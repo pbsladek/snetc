@@ -26,12 +26,12 @@
   (fn [] (System/exit 2)))
 
 (def ^:private cli-options
-  [[nil  "--split PREFIX" "List all /PREFIX IPv4 subnets within CIDR"
+  [[nil  "--split PREFIX" "List all /PREFIX subnets within CIDR"
     :parse-fn #(Integer/parseInt %)
-    :validate [#(<= 0 % 32) "Prefix must be 0–32"]]
-   [nil  "--tree PREFIX"  "Show IPv4 subnet split tree down to /PREFIX"
+    :validate [#(<= 0 % 128) "Prefix must be 0–128"]]
+   [nil  "--tree PREFIX"  "Show subnet split tree down to /PREFIX"
     :parse-fn #(Integer/parseInt %)
-    :validate [#(<= 0 % 32) "Prefix must be 0–32"]]
+    :validate [#(<= 0 % 128) "Prefix must be 0–128"]]
    [nil  "--json"         "Output as JSON (works with all subcommands)"]
    [nil  "--short"        "Output info as a single terse line"]
    ["-h" "--help"         "Print this help and exit"]])
@@ -59,10 +59,10 @@
              "  info <cidr>                   Show subnet info (same as snetc <cidr>)"
              "  lpm <cidr|ip> ...             Longest-prefix match"
              "  mask <mask|/prefix|n> [...]   Convert IPv4 mask and prefix notation"
-             "  next <cidr> [n]               Next (or Nth) adjacent IPv4 block of same size"
+             "  next <cidr> [n]               Next (or Nth) adjacent block of same size"
              "  overlaps <cidr> [...]         Detect overlapping/contained networks (or stdin)"
              "  plan <parent> <n|/prefix> [...]  IPv4 VLSM by hosts, IPv6 allocation by prefix"
-             "  prev <cidr> [n]               Previous adjacent IPv4 block of same size"
+             "  prev <cidr> [n]               Previous adjacent block of same size"
              "  range <start> <end|+count>    Convert IP range to minimal CIDRs"
              "  supernet <cidr> [...]         Smallest CIDR covering all inputs (or stdin)"
              "  tree <cidr>                   Interactive IPv4 split/join subnet planner"
@@ -199,10 +199,12 @@
 
 (defn- tree->json [node]
   (let [info (:info node)]
-    {:cidr     (:cidr  info)
-     :hosts    (:hosts info)
-     :children (when (:children node)
-                 (mapv tree->json (:children node)))}))
+    (cond-> {:cidr     (:cidr info)
+             :children (when (:children node)
+                         (mapv tree->json (:children node)))}
+      (= :ipv6 (:family info)) (assoc :family "ipv6"
+                                      :addresses (str (:addresses info)))
+      (not= :ipv6 (:family info)) (assoc :hosts (:hosts info)))))
 
 ;; ── handlers ──────────────────────────────────────────────────────────────────
 
@@ -214,19 +216,19 @@
       :else   (display/print-subnet-info info))))
 
 (defn- handle-split [cidr new-prefix]
-  (let [base (:prefix (subnet/subnet-info cidr))]
+  (let [base (:prefix (addr/subnet-info cidr))]
     (when (< new-prefix base)
       (die (str "Split prefix /" new-prefix " is smaller than base /" base)))
-    (let [subnets (subnet/split-subnets cidr new-prefix)]
+    (let [subnets (addr/split-subnets cidr new-prefix)]
       (if *json?*
         (display/print-json (mapv info->json subnets))
         (display/print-split-table subnets)))))
 
 (defn- handle-tree-flag [cidr max-prefix]
-  (let [base (:prefix (subnet/subnet-info cidr))]
+  (let [base (:prefix (addr/subnet-info cidr))]
     (when (< max-prefix base)
       (die (str "Max prefix /" max-prefix " is smaller than base /" base)))
-    (let [tree (subnet/subnet-tree cidr max-prefix)]
+    (let [tree (addr/subnet-tree cidr max-prefix)]
       (if *json?*
         (display/print-json (tree->json tree))
         (display/print-subnet-tree tree)))))
@@ -495,14 +497,16 @@
 
 (defn- handle-adjacent [args direction]
   (let [[cidr n-str] args
-        n-raw        (if (nil? n-str) 1 (parse-long-or-nil n-str))]
+        n-raw        (if (nil? n-str) 1N (parse-bigint-or-nil n-str))]
     (when (nil? cidr)          (die (str direction " requires a CIDR")))
     (when (nil? n-raw)         (die (str "Invalid step count: " n-str)))
     (when (< n-raw 1)          (die "Step count must be ≥ 1"))
-    (when (> n-raw 0xFFFFFFFF) (die "Step count exceeds IPv4 address space"))
     (when (> (count args) 2)   (die (str direction " accepts at most one CIDR and one step count")))
+    (when (and (not (str/includes? cidr ":"))
+               (> n-raw 0xFFFFFFFFN))
+      (die "Step count exceeds IPv4 address space"))
     (let [n      (if (= direction "prev") (- n-raw) n-raw)
-          result (subnet/adjacent-cidr cidr n)]
+          result (addr/adjacent-cidr cidr n)]
       (if *json?*
         (display/print-json {:input direction :direction direction :n n-raw :result result})
         (display/print-adjacent-result cidr direction n-raw result)))))

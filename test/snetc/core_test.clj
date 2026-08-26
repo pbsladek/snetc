@@ -367,7 +367,22 @@
       (is (= "10.0.0.128/25"   (:cidr (second data))))))
 
   (testing "split prefix smaller than base prefix dies"
-    (is (dies-with? #(#'core/handle-split "10.0.0.0/24" 16) #"smaller than base"))))
+    (is (dies-with? #(#'core/handle-split "10.0.0.0/24" 16) #"smaller than base")))
+
+  (testing "IPv6 text output lists address ranges"
+    (let [o (with-out-str (#'core/handle-split "2001:db8::/63" 64))]
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "2001:db8:0:1::/64"))
+      (is (str/includes? o "Addresses"))))
+
+  (testing "IPv6 JSON emits address range objects"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-split "2001:db8::/63" 64)))
+          data (json/read-str out :key-fn keyword)]
+      (is (= 2 (count data)))
+      (is (= "ipv6" (:family (first data))))
+      (is (= "2001:db8::/64" (:cidr (first data))))
+      (is (= "18446744073709551616" (:addresses (first data)))))))
 
 (deftest handle-tree-flag-test
   (testing "text output contains root and children"
@@ -383,7 +398,22 @@
       (is (= 2 (count (:children data))))))
 
   (testing "tree prefix smaller than base dies"
-    (is (dies-with? #(#'core/handle-tree-flag "10.0.0.0/24" 16) #"smaller than base"))))
+    (is (dies-with? #(#'core/handle-tree-flag "10.0.0.0/24" 16) #"smaller than base")))
+
+  (testing "IPv6 tree text output uses address counts"
+    (let [o (with-out-str (#'core/handle-tree-flag "2001:db8::/63" 64))]
+      (is (str/includes? o "2001:db8::/63"))
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "addresses"))))
+
+  (testing "IPv6 tree JSON emits address counts"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-tree-flag "2001:db8::/63" 64)))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "ipv6" (:family data)))
+      (is (= "2001:db8::/63" (:cidr data)))
+      (is (= "36893488147419103232" (:addresses data)))
+      (is (= 2 (count (:children data)))))))
 
 (deftest handle-contains-test
   (testing "text output shows yes/no for IPs"
@@ -751,7 +781,19 @@
     (let [out  (with-out-str (binding [core/*json?* true]
                                (#'core/handle-adjacent ["10.0.0.0/24"] "next")))
           data (json/read-str out :key-fn keyword)]
-      (is (= "10.0.1.0/24" (:result data))))))
+      (is (= "10.0.1.0/24" (:result data)))))
+
+  (testing "IPv6 next and prev return adjacent blocks"
+    (let [next-out (with-out-str (#'core/handle-adjacent ["2001:db8::/64"] "next"))
+          prev-out (with-out-str (#'core/handle-adjacent ["2001:db8:0:1::/64"] "prev"))]
+      (is (str/includes? next-out "2001:db8:0:1::/64"))
+      (is (str/includes? prev-out "2001:db8::/64"))))
+
+  (testing "IPv6 JSON emits adjacent result"
+    (let [out  (with-out-str (binding [core/*json?* true]
+                               (#'core/handle-adjacent ["2001:db8::/64"] "next")))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "2001:db8:0:1::/64" (:result data))))))
 
 (deftest handle-supernet-success-test
   (testing "text output shows supernet"
@@ -844,9 +886,19 @@
     (let [o (run-main "--split" "25" "10.0.0.0/24")]
       (is (str/includes? o "10.0.0.0/25"))))
 
+  (testing "--split option accepts IPv6 prefixes above 32"
+    (let [o (run-main "--split" "64" "2001:db8::/63")]
+      (is (str/includes? o "2001:db8::/64"))
+      (is (str/includes? o "2001:db8:0:1::/64"))))
+
   (testing "--tree option calls handle-tree-flag"
     (let [o (run-main "--tree" "25" "10.0.0.0/24")]
       (is (str/includes? o "10.0.0.0/24"))))
+
+  (testing "--tree option accepts IPv6 prefixes above 32"
+    (let [o (run-main "--tree" "64" "2001:db8::/63")]
+      (is (str/includes? o "2001:db8::/63"))
+      (is (str/includes? o "addresses"))))
 
   (testing "subcommand dispatch routes to correct handler"
     (let [o (run-main "aggregate" "10.0.0.0/24" "10.0.1.0/24")]
@@ -855,6 +907,10 @@
   (testing "next subcommand via lambda dispatch"
     (let [o (run-main "next" "10.0.0.0/24")]
       (is (str/includes? o "10.0.1.0/24"))))
+
+  (testing "next subcommand dispatch works for IPv6"
+    (let [o (run-main "next" "2001:db8::/64")]
+      (is (str/includes? o "2001:db8:0:1::/64"))))
 
   (testing "prev subcommand via lambda dispatch"
     (let [o (run-main "prev" "10.0.2.0/24")]

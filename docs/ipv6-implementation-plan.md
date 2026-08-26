@@ -63,6 +63,8 @@ compatibility, but new family-neutral operations should not depend on Java
 |---|---:|---|
 | `validate` | 1 | Report `:type` as `ipv4`, `ipv4-cidr`, `ipv6`, or `ipv6-cidr`. |
 | `info` / bare CIDR | 1 | IPv6 output should omit broadcast, mask, and wildcard fields. |
+| `--split` | 2 | Family-aware subnet splitting; IPv6 reports address ranges/counts. |
+| `--tree` | 2 | Non-interactive split tree; TUI remains IPv4-only. |
 | `contains` | 1 | Require CIDR and IP to share the same family. |
 | `range` | 2 | Accept IPv6 start/end and `+count`; reject mixed families. |
 | `aggregate` | 2 | Group by family or reject mixed families. Prefer reject first. |
@@ -111,8 +113,8 @@ Implementation notes:
 - IPv4 JSON for `info` remains compatible with the previous shape.
 - IPv6 JSON uses address-range keys and stringifies `:addresses` to avoid
   losing precision in large address counts.
-- `tree` remains IPv4-only and now fails early with a clear message for IPv6
-  input.
+- The interactive `tree` subcommand remains IPv4-only and fails early with a
+  clear message for IPv6 input.
 
 Acceptance criteria:
 
@@ -127,6 +129,9 @@ Acceptance criteria:
 Status: implemented
 
 - Move range-based operations to bigint/family-neutral helpers:
+  - split
+  - adjacent next/prev
+  - non-interactive tree
   - aggregate
   - overlaps
   - diff
@@ -150,6 +155,8 @@ Implementation notes:
 
 - `aggregate`, `overlaps`, `diff`, `lpm`, `range`, and `supernet` now support
   IPv6 and reject mixed-family inputs.
+- `--split`, `--tree`, `next`, and `prev` now support IPv6 using the same
+  family-aware address layer.
 - `range` supports IPv6 start/end and `+count`; IPv6 JSON includes
   `"family":"ipv6"` and stringifies large totals.
 - `free`, `allocate`, `plan`, and `util` remain Phase 3 because their IPv6

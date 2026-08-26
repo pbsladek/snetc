@@ -80,8 +80,8 @@ Tagged releases publish multi-architecture images to Docker Hub as `pwbsladek/sn
 
 ```
 snetc <cidr>                              Show info for an IPv4 or IPv6 subnet
-snetc <cidr> --split <prefix>             List all /<prefix> IPv4 subnets within <cidr>
-snetc <cidr> --tree  <prefix>             Show IPv4 split tree down to /<prefix>
+snetc <cidr> --split <prefix>             List all /<prefix> subnets within <cidr>
+snetc <cidr> --tree  <prefix>             Show split tree down to /<prefix>
 snetc aggregate <cidr> [<cidr> ...]       Aggregate CIDRs to minimal covering set
 snetc aggregate                           Read CIDRs from stdin (one per line)
 snetc contains <cidr> <ip> [<ip> ...]     Check which IPs fall within a subnet
@@ -117,9 +117,9 @@ $ snetc 192.168.0.0/22
 
 ### Split into subnets
 
-Split and tree rendering are IPv4-only. Non-interactive commands such as `info`,
-`aggregate`, `contains`, `range`, `free`, `plan`, `allocate`, `util`,
-`classify`, and `analyze` support IPv6 and reject mixed IPv4/IPv6 set inputs.
+Split and non-interactive tree rendering support IPv4 and IPv6. Non-interactive
+set commands reject mixed IPv4/IPv6 inputs; the interactive `tree` TUI remains
+IPv4-only.
 
 ```
 $ snetc 192.168.0.0/22 --split 24
