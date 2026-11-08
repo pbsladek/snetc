@@ -238,13 +238,8 @@
 
 (def ^:private bulk-split-confirm-threshold 1024)
 
-(defn- split-leaf-count [cidr target-prefix]
-  (let [prefix (:prefix (subnet/parse-cidr cidr))]
-    (when (>= target-prefix prefix)
-      (bit-shift-left 1 (- target-prefix prefix)))))
-
 (defn- confirm-bulk-split? [state saved-mode cidr target-prefix]
-  (let [leaf-count (or (split-leaf-count cidr target-prefix) 0)]
+  (let [leaf-count (plan/split-leaf-count cidr target-prefix)]
     (if (<= leaf-count bulk-split-confirm-threshold)
       true
       (let [term (terminal state)
@@ -254,11 +249,14 @@
 
 (defn- split-selected-to-prefix [state saved-mode target-prefix message-f]
   (if-let [cidr (:cidr (selected-row state))]
-    (if (confirm-bulk-split? state saved-mode cidr target-prefix)
-      (apply-plan-change state
-                         #(plan/split-leaf-to-prefix %1 %2 target-prefix)
-                         message-f)
-      (assoc state :message "Split cancelled"))
+    (try
+      (if (confirm-bulk-split? state saved-mode cidr target-prefix)
+        (apply-plan-change state
+                           #(plan/split-leaf-to-prefix %1 %2 target-prefix)
+                           message-f)
+        (assoc state :message "Split cancelled"))
+      (catch Exception e
+        (assoc state :message (ex-message e))))
     (assoc state :message "No subnet selected")))
 
 (defn- prompt-line [saved-mode prompt]
@@ -336,13 +334,19 @@
                                 (fn [cidr _] (str "Split " cidr " to /" prefix)))
       (assoc state :message "Invalid prefix"))))
 
+(defn- split-selected-for-hosts [state saved-mode hosts]
+  (try
+    (let [prefix (plan/hosts->target-prefix hosts)]
+      (split-selected-to-prefix state saved-mode prefix
+                                (fn [cidr _] (str "Split " cidr " for " hosts " host(s)"))))
+    (catch Exception e
+      (assoc state :message (ex-message e)))))
+
 (defn- split-for-hosts-with-prompt [state saved-mode]
   (let [term (terminal state)
         hosts (actions/parse-positive-long ((:prompt term) saved-mode "Split selected for hosts: "))]
     (if hosts
-      (let [prefix (plan/hosts->target-prefix hosts)]
-        (split-selected-to-prefix state saved-mode prefix
-                                  (fn [cidr _] (str "Split " cidr " for " hosts " host(s)"))))
+      (split-selected-for-hosts state saved-mode hosts)
       (assoc state :message "Invalid host count"))))
 
 (defn- join-to-prefix-with-prompt [state saved-mode]
@@ -567,9 +571,7 @@
                                              (fn [cidr _] (str "Split " cidr " to /" prefix)))
                    (assoc state :message "Usage: split-to /N"))
       "hosts" (if-let [hosts (actions/parse-positive-long arg)]
-                (let [prefix (plan/hosts->target-prefix hosts)]
-                  (split-selected-to-prefix state saved-mode prefix
-                                            (fn [cidr _] (str "Split " cidr " for " hosts " host(s)"))))
+                (split-selected-for-hosts state saved-mode hosts)
                 (assoc state :message "Usage: hosts N"))
       "join" (if-let [prefix (actions/parse-prefix-input arg)]
                (apply-plan-change state

@@ -148,3 +148,68 @@
     (let [planner (plan/new-plan "10.0.0.0/24")
           split   (plan/split-leaf planner "10.0.0.0/24")]
       (is (= (plan/leaf-cidrs split) (plan/leaf-cidrs (plan/redo split)))))))
+
+(deftest bulk-split-limit-test
+  (testing "the limit is inclusive and can be checked without allocating a tree"
+    (is (= 65536 (plan/split-leaf-count "10.0.0.0/16" 32)))
+    (is (= 1 (plan/split-leaf-count "10.0.0.1/32" 32))))
+  (testing "oversized splits are rejected before tree construction"
+    (with-redefs-fn {#'plan/split-tree-to-prefix
+                    (fn [& _] (throw (AssertionError. "Tree allocation must not start")))}
+      (fn []
+        (doseq [[cidr prefix] [["0.0.0.0/0" 32] ["10.0.0.0/15" 32]]]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"limit is 65536"
+                                (plan/split-leaf-to-prefix (plan/new-plan cidr) cidr prefix)))))))
+  (testing "invalid prefixes fail before bit arithmetic"
+    (doseq [prefix [nil 24.5 "24" -1 33 64]]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Target prefix must be"
+                            (plan/split-leaf-count "10.0.0.0/24" prefix)))))
+  (testing "smaller target prefixes are rejected"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"smaller than selected"
+                          (plan/split-leaf-count "10.0.0.0/24" 23)))))
+
+(deftest imported-tree-validation-test
+  (let [valid (-> (plan/new-plan "10.0.0.0/24")
+                  (plan/split-leaf "10.0.0.0/24")
+                  plan/export-plan)
+        leaf {:cidr "10.0.0.0/24" :label nil :children nil}]
+    (testing "malformed nodes and branches are rejected"
+      (doseq [root [nil []
+                    (assoc leaf :cidr nil)
+                    (assoc leaf :label 42)
+                    (assoc leaf :children "invalid")
+                    (assoc leaf :children [nil nil])
+                    (assoc leaf :children [leaf])
+                    (assoc leaf :children [{:cidr "invalid" :children (:children (:root valid))}])
+                    (assoc-in (:root valid) [:children 0 :cidr] "10.0.0.1/25")
+                    (assoc-in (:root valid) [:children 0 :cidr] "10.0.0.0/26")
+                    (assoc-in (:root valid) [:children 1 :cidr] "10.0.0.0/25")
+                    (update (:root valid) :children #(vec (reverse %)))]]
+        (is (thrown? clojure.lang.ExceptionInfo (plan/import-plan (assoc valid :root root)))
+            (pr-str root))))
+    (testing "valid leaves cannot conceal an invalid internal CIDR"
+      (let [nested (-> (plan/import-plan valid)
+                       (plan/split-leaf "10.0.0.0/25")
+                       plan/export-plan)]
+        (doseq [cidr ["invalid" "10.0.0.0/26"]]
+          (let [bad (assoc-in nested [:root :children 0 :cidr] cidr)]
+            (is (= ["10.0.0.0/26" "10.0.0.64/26" "10.0.0.128/25"]
+                   (plan/leaf-cidrs bad)))
+            (is (thrown? clojure.lang.ExceptionInfo (plan/import-plan bad)))))))
+    (testing "a /32 cannot contain child nodes"
+      (let [data (plan/export-plan (plan/new-plan "10.0.0.1/32"))
+            node (:root data)]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"/32 node cannot have children"
+                              (plan/import-plan (assoc-in data [:root :children] [node node]))))))
+    (testing "nested valid imports preserve split, join, and labels"
+      (let [data (-> (plan/import-plan valid)
+                     (plan/split-leaf "10.0.0.0/25")
+                     (plan/label-leaf "10.0.0.0/26" "edge")
+                     plan/export-plan)
+            imported (plan/import-plan data)]
+        (is (= data (plan/export-plan imported)))
+        (is (plan/validate-plan (plan/join-leaf imported "10.0.0.0/26"))))))
+  (testing "non-map data produces a contextual error"
+    (doseq [data [nil [] 42]]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Plan must be a map"
+                            (plan/import-plan data))))))

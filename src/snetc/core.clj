@@ -14,6 +14,7 @@
 
 ;; When true all handlers emit JSON instead of human-readable tables.
 (def ^:dynamic *json?* false)
+(def ^:dynamic *short?* false)
 
 ;; Override points for die/exit-empty! — rebound in batch mode so that
 ;; per-command failures throw instead of terminating the whole process.
@@ -208,7 +209,8 @@
 
 ;; ── handlers ──────────────────────────────────────────────────────────────────
 
-(defn- handle-info [cidr & {:keys [short?]}]
+(defn- handle-info [cidr & {:keys [short?] :or {short? *short?*}}]
+  (when (nil? cidr) (die "info requires a CIDR"))
   (let [info (addr/subnet-info cidr)]
     (cond
       *json?* (display/print-json (info->json info))
@@ -449,9 +451,10 @@
                             (= :ipv6 family) (assoc :family "ipv6")))
       (display/print-range-result start-ip end-ip total cidrs))))
 
-(defn- handle-range [[start-ip end-arg]]
+(defn- handle-range [[start-ip end-arg & extra]]
   (when (nil? start-ip) (die "range requires a start IP and an end IP or +count"))
   (when (nil? end-arg) (die "range requires both a start IP and an end IP or +count"))
+  (when (seq extra) (die "range accepts exactly two arguments: start IP and end IP or +count"))
   (let [start-result (parse-ip-result start-ip)]
     (when-let [msg (:error start-result)]
       (die msg))
@@ -661,8 +664,9 @@
    "contains"  handle-contains
    "diff"      handle-diff
    "free"      handle-free
-   "info"      (fn [[cidr & _]]
+   "info"      (fn [[cidr & extra]]
                  (when (nil? cidr) (die "info requires a CIDR"))
+                 (when (seq extra) (die "info accepts exactly one CIDR"))
                  (handle-info cidr))
    "lpm"       handle-lpm
    "mask"      handle-mask
@@ -727,21 +731,30 @@
         parsed     (assoc :result parsed)
         @error-msg (assoc :error @error-msg)))))
 
-(defn- handle-batch [_args]
-  (let [raw      (try (slurp *in*)
-                      (catch Exception _ (die "batch: could not read stdin")))
-        commands (try (json/read-str raw)
-                      (catch Exception _ (die "batch: stdin is not valid JSON")))]
-    (when-not (sequential? commands)
-      (die "batch: stdin must be a JSON array of {\"cmd\":\"...\",\"args\":[...]} objects"))
-    (display/print-json
-     (mapv (fn [item]
-             (let [cmd  (get item "cmd")
-                   args (vec (get item "args" []))]
-               (if (nil? cmd)
-                 {:cmd nil :exit 1 :error "missing \"cmd\" field"}
-                 (run-batch-item! cmd args))))
-           commands))))
+(defn- run-batch-entry! [item]
+  (let [cmd (when (map? item) (get item "cmd"))
+        args (get item "args" [])
+        error (cond
+                (not (map? item)) "batch item must be an object"
+                (nil? cmd) "missing \"cmd\" field"
+                (or (not (string? cmd)) (str/blank? cmd)) "\"cmd\" must be a non-blank string"
+                (not (vector? args)) "\"args\" must be an array of strings"
+                (not-every? string? args) "\"args\" must contain only strings")]
+    (if error
+      {:cmd cmd :exit 1 :error error}
+      (run-batch-item! cmd args))))
+
+(defn- handle-batch [args]
+  (when (seq args) (die "batch accepts no arguments; provide commands on stdin"))
+  (let [raw (try (slurp *in*) (catch Exception _ nil))]
+    (when (nil? raw) (die "batch: could not read stdin"))
+    (let [parsed (try {:commands (json/read-str raw)}
+                      (catch Exception _ {:error "batch: stdin is not valid JSON"}))]
+      (when-let [error (:error parsed)] (die error))
+      (let [commands (:commands parsed)]
+        (when-not (vector? commands)
+          (die "batch: stdin must be a JSON array of {\"cmd\":\"...\",\"args\":[...]} objects"))
+        (display/print-json (mapv run-batch-entry! commands))))))
 
 ;; ── main entry point ──────────────────────────────────────────────────────────
 
@@ -766,7 +779,14 @@
       (do (println (usage summary)) (System/exit 0))
 
       :else
-      (binding [*json?* (boolean (or (:json options) trailing-json?))]
+      (binding [*json?* (boolean (or (:json options) trailing-json?))
+                *short?* (boolean (:short options))]
+        (when (and raw-rhs (not= cmd "diff"))
+          (die "The '--' separator is only supported by diff"))
+        (when (and (or (:split options) (:tree options)
+                       (nil? (subcommands-with-batch cmd)))
+                   (seq rest-args))
+          (die "Subnet info, --split and --tree accept exactly one input"))
         (cond
           (:split options)
           (do (when (nil? cmd) (die "usage: snetc <cidr> --split <prefix>"))

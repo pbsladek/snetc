@@ -69,6 +69,8 @@
   (Integer/parseInt s 16))
 
 (defn- embedded-ipv4->hextets [s]
+  (when-not (re-matches ipv4-re s)
+    (throw (ex-info (str "Invalid embedded IPv4 address: " s) {:ip s})))
   (let [n (ip/ip->long s)]
     [(bit-and (bit-shift-right n 16) 0xFFFF)
      (bit-and n 0xFFFF)]))

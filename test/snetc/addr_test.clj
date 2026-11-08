@@ -42,6 +42,16 @@
     (is (thrown? Exception (addr/parse-cidr "10.0.0.0/33")))
     (is (thrown? Exception (addr/parse-cidr "2001:db8::/129")))))
 
+(deftest embedded-ipv4-validation-test
+  (testing "embedded IPv4 follows the same strict octet syntax as standalone IPv4"
+    (doseq [suffix ["192.168.001.1" "010.0.0.1" "0.0.0.00"
+                    "256.0.0.1" "1.2.3" "1.2.3.4.5" "1.2.3."]]
+      (is (thrown? clojure.lang.ExceptionInfo (addr/parse-ip suffix)))
+      (is (thrown? clojure.lang.ExceptionInfo (addr/parse-ip (str "::ffff:" suffix))))))
+  (testing "zero and maximum octets remain valid"
+    (is (= "::ffff:0:0" (:text (addr/parse-ip "::ffff:0.0.0.0"))))
+    (is (= "::ffff:ffff:ffff" (:text (addr/parse-ip "::ffff:255.255.255.255"))))))
+
 (deftest subnet-info-test
   (testing "IPv4 subnet info preserves existing compatibility keys"
     (let [info (addr/subnet-info "10.0.0.0/24")]

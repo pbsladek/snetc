@@ -15,7 +15,7 @@
 (defn valid-prefix?
   "Returns true if p is an integer in [0, 32]."
   [p]
-  (<= 0 p 32))
+  (and (integer? p) (<= 0 p 32)))
 
 (defn parse-cidr
   "Returns {:ip-str :prefix} for CIDR string. Throws ex-info on invalid input."
