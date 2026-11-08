@@ -352,6 +352,31 @@
 
 ;;; ── handler success paths ────────────────────────────────────────────────────
 
+(deftest malformed-batch-item-test
+  (testing "invalid records return individual errors and later commands still execute"
+    (doseq [item [nil 42 "info" [] {}
+                  {"cmd" nil} {"cmd" 42} {"cmd" true} {"cmd" {}} {"cmd" "  "}
+                  {"cmd" "info" "args" nil}
+                  {"cmd" "info" "args" 42}
+                  {"cmd" "info" "args" "10.0.0.0/24"}
+                  {"cmd" "info" "args" {}}
+                  {"cmd" "info" "args" [nil]}
+                  {"cmd" "info" "args" [42]}
+                  {"cmd" "info" "args" ["10.0.0.0/24" true]}]]
+      (let [input (json/write-str [item {"cmd" "info" "args" ["10.0.0.0/24"]}])
+            out (with-out-str (with-in-str input (#'core/handle-batch [])))
+            data (json/read-str out :key-fn keyword)]
+        (is (= 2 (count data)))
+        (is (= 1 (:exit (first data))) (pr-str item))
+        (is (string? (:error (first data))))
+        (is (= 0 (:exit (second data))))
+        (is (= "10.0.0.0/24" (-> data second :result :cidr))))))
+  (testing "omitted args default to an empty argument vector"
+    (let [out (with-out-str
+                (with-in-str "[{\"cmd\":\"info\"}]" (#'core/handle-batch [])))
+          data (json/read-str out :key-fn keyword)]
+      (is (= "info requires a CIDR" (:error (first data)))))))
+
 (deftest handle-split-test
   (testing "text output lists all subnets"
     (let [o (with-out-str (#'core/handle-split "10.0.0.0/24" 25))]
@@ -1023,3 +1048,29 @@
   (testing "next rejects step that overflows address space"
     (is (dies-with? #(run-main "next" "10.0.0.0/24" "4294967295")
                     #"outside valid IPv4"))))
+
+(deftest surplus-cli-arguments-test
+  (doseq [args [["info" "10.0.0.0/24" "extra"]
+                ["range" "10.0.0.0" "+10" "extra"]
+                ["range" "2001:db8::" "2001:db8::f" "extra"]
+                ["10.0.0.0/24" "extra"]
+                ["2001:db8::/64" "extra"]
+                ["10.0.0.1" "extra"]
+                ["10.0.0.0/24" "--split" "25" "extra"]
+                ["10.0.0.0/24" "--tree" "25" "extra"]]]
+    (is (dies-with? #(apply run-main args) #"exactly") (pr-str args)))
+  (testing "batch rejects positional arguments before reading stdin"
+    (is (dies-with? #(run-main "batch" "extra") #"accepts no arguments")))
+  (testing "arguments after a separator cannot be silently discarded"
+    (is (dies-with? #(run-main "info" "10.0.0.0/24" "--" "extra") #"only supported by diff"))))
+
+(deftest info-alias-short-test
+  (doseq [cidr ["10.0.0.0/24" "2001:db8::/64"]]
+    (testing "info alias and direct CIDR share the same short output"
+      (let [direct (run-main cidr "--short")
+            alias (run-main "info" cidr "--short")]
+        (is (= direct alias))
+        (is (= 1 (count (str/split-lines alias))))))
+    (testing "JSON keeps precedence over short output"
+      (let [data (json/read-str (run-main "info" cidr "--short" "--json") :key-fn keyword)]
+        (is (= cidr (:cidr data)))))))

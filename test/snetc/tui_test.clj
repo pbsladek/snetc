@@ -301,6 +301,26 @@
       (is (= ["10.0.0.0/16"] (plan/leaf-cidrs (:plan result))))
       (is (= "Split cancelled" (:message result))))))
 
+(deftest oversized-tui-request-test
+  (testing "both host entry points report oversized requests and retain the plan"
+    (doseq [[key input] [[:split-hosts "4294967295"]
+                         [:command "hosts 4294967295"]
+                         [:command "h 4294967295"]]]
+      (let [state (assoc base-state :terminal {:prompt (fn [_ _] input)})
+            result (press state key)]
+        (is (= (:plan state) (:plan result)))
+        (is (str/includes? (:message result) "No IPv4 subnet can fit"))
+        (is (= 2 (count (plan/leaf-cidrs (:plan (press result :split)))))))))
+  (testing "unsafe bulk splits fail before asking for confirmation"
+    (let [prompts (atom 0)
+          state (assoc base-state
+                       :plan (plan/new-plan "0.0.0.0/0")
+                       :terminal {:prompt (fn [_ _] (swap! prompts inc) "/32")})
+          result (press state :split-to-prefix)]
+      (is (= 1 @prompts))
+      (is (= (:plan state) (:plan result)))
+      (is (str/includes? (:message result) "limit is 65536")))))
+
 (deftest injected-run-loop-test
   (when (= "dumb" (System/getenv "TERM"))
     (is true "TERM=dumb skips injected run-loop terminal assertions"))

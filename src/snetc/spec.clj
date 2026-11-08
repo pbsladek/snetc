@@ -2,6 +2,7 @@
   "Specs for all snetc domain types and public functions."
   (:require [clojure.spec.alpha     :as s]
             [clojure.spec.gen.alpha :as gen]
+            [clojure.string         :as str]
             [snetc.addr             :as addr]
             [snetc.ip               :as ip]
             [snetc.subnet           :as subnet]
@@ -61,6 +62,20 @@
    "2001:db8:1::/48"
    "fd00::/8"])
 
+(defn- ipv6-literal-gen []
+  (gen/fmap (fn [[hextets start length compressed? fmt]]
+              (let [fmt-hextets #(str/join ":" (map (partial format fmt) %))
+                    end (min 8 (+ start length))]
+                (if compressed?
+                  (str (fmt-hextets (subvec hextets 0 start)) "::"
+                       (fmt-hextets (subvec hextets end)))
+                  (fmt-hextets hextets))))
+            (gen/tuple (gen/vector (gen/choose 0 65535) 8)
+                       (gen/choose 0 7)
+                       (gen/choose 1 8)
+                       (gen/elements [true false])
+                       (gen/elements ["%x" "%04x" "%X"]))))
+
 (defn- parses-as-family? [parse-fn family s]
   (try (= family (:family (parse-fn s)))
        (catch Exception _ false)))
@@ -93,13 +108,17 @@
 (s/def ::ipv6-str
   (s/with-gen
     (s/and string? #(parses-as-family? addr/parse-ip :ipv6 %))
-    #(gen/elements ipv6-samples)))
+    #(gen/frequency [[1 (gen/elements ipv6-samples)]
+                     [8 (ipv6-literal-gen)]
+                     [1 (gen/fmap (fn [ip] (str "::ffff:" ip)) (s/gen ::ip-str))]])))
 
 ;; Valid IPv6 CIDR supported by snetc.addr.
 (s/def ::ipv6-cidr-str
   (s/with-gen
     (s/and string? #(parses-as-family? addr/parse-cidr :ipv6 %))
-    #(gen/elements ipv6-cidr-samples)))
+    #(gen/frequency [[1 (gen/elements ipv6-cidr-samples)]
+                     [9 (gen/fmap (fn [[ip prefix]] (str ip "/" prefix))
+                                   (gen/tuple (s/gen ::ipv6-str) (gen/choose 0 128)))]])))
 
 ;; Valid IPv4 or IPv6 address literal.
 (s/def ::addr-str

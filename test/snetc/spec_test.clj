@@ -2,6 +2,7 @@
   (:require [clojure.test            :refer [deftest is testing]]
             [clojure.spec.alpha      :as s]
             [clojure.spec.test.alpha :as stest]
+            [clojure.test.check.generators :as gen]
             [snetc.spec     :as spec]
             [snetc.addr     :as addr]
             [snetc.ip       :as ip]
@@ -16,6 +17,26 @@
   [sym]
   (let [result (first (stest/check sym {:clojure.spec.test.check/opts {:num-tests num-tests}}))]
     (true? (:pass? (:clojure.spec.test.check/ret result)))))
+
+(deftest ipv6-generator-roundtrip-test
+  (let [ips (gen/generate (gen/vector (s/gen ::spec/ipv6-str) 100) 30 20261107)
+        cidrs (gen/generate (gen/vector (s/gen ::spec/ipv6-cidr-str) 100) 30 20261108)]
+    (testing "generators explore addresses and prefixes beyond the fixed examples"
+      (is (> (count (distinct ips)) 50))
+      (is (> (count (distinct (map (comp :prefix addr/parse-cidr) cidrs))) 30)))
+    (testing "generated literals round-trip through numeric addresses and canonical text"
+      (doseq [ip ips]
+        (let [parsed (addr/parse-ip ip)
+              text (addr/address->text :ipv6 (:addr parsed))]
+          (is (s/valid? ::spec/ipv6-str ip))
+          (is (= parsed (addr/parse-ip text))))))
+    (testing "generated CIDRs preserve network boundaries when canonicalized"
+      (doseq [cidr cidrs]
+        (let [parsed (addr/parse-cidr cidr)
+              normalized (addr/parse-cidr (:cidr parsed))]
+          (is (s/valid? ::spec/ipv6-cidr-str cidr))
+          (is (= (select-keys parsed [:family :prefix :network :last])
+                 (select-keys normalized [:family :prefix :network :last]))))))))
 
 ;; ── Data spec conformance ─────────────────────────────────────────────────────
 

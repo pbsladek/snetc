@@ -6,8 +6,11 @@
             [snetc.subnet :as subnet]))
 
 (def plan-version 1)
+(def ^:private max-split-leaves 65536)
 
 (defn- normalize-cidr [cidr]
+  (when-not (string? cidr)
+    (throw (ex-info "Plan CIDR must be a string" {:cidr cidr})))
   (:cidr (subnet/subnet-info cidr)))
 
 (defn leaf?
@@ -157,19 +160,33 @@
           new-root (update-node (:root plan) cidr #(assoc % :children children))]
       (with-history plan new-root (:cidr (first children))))))
 
-(defn split-leaf-to-prefix
-  "Returns plan with cidr recursively split until every descendant is target-prefix.
-  Throws ex-info if cidr is not a splittable leaf or target-prefix is invalid."
-  [planner cidr target-prefix]
+(defn split-leaf-count
+  "Returns the number of leaves a split to target-prefix would create.
+  Throws ex-info for invalid prefixes or splits exceeding 65536 leaves."
+  [cidr target-prefix]
   (when-not (subnet/valid-prefix? target-prefix)
     (throw (ex-info (str "Target prefix must be 0–32, got: " target-prefix)
                     {:target-prefix target-prefix})))
-  (let [cidr (normalize-cidr cidr)
-        start-prefix (cidr-prefix cidr)]
+  (let [start-prefix (cidr-prefix cidr)]
     (when (< target-prefix start-prefix)
       (throw (ex-info (str "Target prefix /" target-prefix
                            " is smaller than selected /" start-prefix)
                       {:cidr cidr :target-prefix target-prefix})))
+    (let [n (bit-shift-left 1 (- target-prefix start-prefix))]
+      (when (> n max-split-leaves)
+        (throw (ex-info (str "Split would produce " n " leaves; limit is " max-split-leaves)
+                        {:cidr cidr :target-prefix target-prefix
+                         :count n :limit max-split-leaves})))
+      n)))
+
+(defn split-leaf-to-prefix
+  "Returns plan with cidr recursively split until every descendant is target-prefix.
+  Throws ex-info if cidr is not a splittable leaf, target-prefix is invalid,
+  or the split would exceed 65536 leaves."
+  [planner cidr target-prefix]
+  (split-leaf-count cidr target-prefix)
+  (let [cidr (normalize-cidr cidr)
+        start-prefix (cidr-prefix cidr)]
     (if (= target-prefix start-prefix)
       (assoc planner :cursor cidr)
       (do
@@ -288,10 +305,33 @@
   [plan]
   (mapv (comp subnet/cidr->range :cidr) (leaves plan)))
 
+(defn- validate-node! [node expected-cidr]
+  (when-not (map? node)
+    (throw (ex-info "Plan node must be a map" {:node node})))
+  (let [{:keys [cidr label children]} node
+        normalized (normalize-cidr cidr)]
+    (when-not (= cidr normalized)
+      (throw (ex-info "Plan node CIDR must be normalized" {:cidr cidr :expected normalized})))
+    (when-not (= cidr expected-cidr)
+      (throw (ex-info "Plan node does not match expected subnet"
+                      {:cidr cidr :expected expected-cidr})))
+    (when-not (or (nil? label) (string? label))
+      (throw (ex-info "Plan label must be a string or nil" {:cidr cidr :label label})))
+    (when-not (or (nil? children) (vector? children))
+      (throw (ex-info "Plan children must be a vector or nil" {:cidr cidr})))
+    (when (seq children)
+      (when-not (= 2 (count children))
+        (throw (ex-info "Plan branch must have exactly two children" {:cidr cidr})))
+      (when (= 32 (cidr-prefix cidr))
+        (throw (ex-info "Plan /32 node cannot have children" {:cidr cidr})))
+      (doseq [[child expected] (map vector children (split-once cidr))]
+        (validate-node! child expected)))))
+
 (defn validate-plan
-  "Returns true when plan leaves exactly partition the parent CIDR.
+  "Returns true when every node is a valid binary split and leaves partition the parent.
   Throws ex-info with context when the plan is invalid."
   [plan]
+  (validate-node! (:root plan) (normalize-cidr (:parent plan)))
   (let [[pstart pend] (subnet/cidr->range (:parent plan))
         ranges (plan-ranges plan)]
     (when (empty? ranges)
@@ -318,20 +358,22 @@
 (defn import-plan
   "Returns a runtime plan from exported EDN data."
   [data]
-  (let [data (if (string? data) (edn/read-string data) data)
-        parent (normalize-cidr (:parent data))
-        root (:root data)
-        plan {:version (or (:version data) plan-version)
-              :parent parent
-              :root root
-              :cursor (:cidr root)
-              :undo []
-              :redo []}]
-    (when-not (= plan-version (:version plan))
-      (throw (ex-info (str "Unsupported plan version: " (:version plan))
-                      {:version (:version plan)})))
-    (when-not (= parent (:cidr root))
-      (throw (ex-info "Plan root does not match parent CIDR"
-                      {:parent parent :root (:cidr root)})))
-    (validate-plan plan)
-    plan))
+  (let [data (if (string? data) (edn/read-string data) data)]
+    (when-not (map? data)
+      (throw (ex-info "Plan must be a map" {:data data})))
+    (let [parent (normalize-cidr (:parent data))
+          root (:root data)
+          plan {:version (or (:version data) plan-version)
+                :parent parent
+                :root root
+                :cursor (:cidr root)
+                :undo []
+                :redo []}]
+      (when-not (= plan-version (:version plan))
+        (throw (ex-info (str "Unsupported plan version: " (:version plan))
+                        {:version (:version plan)})))
+      (when-not (= parent (:cidr root))
+        (throw (ex-info "Plan root does not match parent CIDR"
+                        {:parent parent :root (:cidr root)})))
+      (validate-plan plan)
+      plan)))

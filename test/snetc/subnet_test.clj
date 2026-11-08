@@ -34,6 +34,12 @@
   (is (not (valid-prefix? -1)))
   (is (not (valid-prefix? 33))))
 
+(deftest invalid-prefix-types-test
+  (doseq [prefix [nil 24.5 24.0 49/2 "24" true [] {}]]
+    (is (false? (valid-prefix? prefix)) (str "rejects " (pr-str prefix)))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"New prefix must be"
+                          (split-subnets "10.0.0.0/24" prefix)))))
+
 ;;; ── parse-cidr ───────────────────────────────────────────────────────────────
 
 (deftest parse-cidr-test
